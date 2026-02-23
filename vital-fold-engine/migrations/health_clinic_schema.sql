@@ -233,8 +233,7 @@ CREATE TABLE IF NOT EXISTS vital_fold.emergency_contact (
     last_name VARCHAR(255) NOT NULL,
     relationship VARCHAR(255) NOT NULL,
     phone_number VARCHAR(20) NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    FOREIGN KEY (patient_id) REFERENCES vital_fold.patient(patient_id)
+    email VARCHAR(255) NOT NULL
 );
 
 --=============================================================================
@@ -270,8 +269,7 @@ CREATE TABLE IF NOT EXISTS vital_fold.patient_demographics (
     age INT NOT NULL,
     ssn VARCHAR(11) NOT NULL,
     ethnicity VARCHAR(255) NOT NULL,
-    birth_gender VARCHAR(50) NOT NULL,
-    FOREIGN KEY (patient_id) REFERENCES vital_fold.patient(patient_id)
+    birth_gender VARCHAR(50) NOT NULL
 );
 
 --=============================================================================
@@ -305,8 +303,6 @@ CREATE TABLE IF NOT EXISTS vital_fold.patient_insurance (
     policy_number VARCHAR(255) NOT NULL,
     coverage_start_date DATE NOT NULL,
     coverage_end_date DATE,
-    FOREIGN KEY (patient_id) REFERENCES vital_fold.patient(patient_id),
-    FOREIGN KEY (insurance_plan_id) REFERENCES vital_fold.insurance_plan(insurance_plan_id)
 );
 
 --=============================================================================
@@ -349,9 +345,7 @@ CREATE TABLE IF NOT EXISTS vital_fold.clinic_schedule (
     provider_id UUID NOT NULL,
     day_of_week VARCHAR(20) NOT NULL,
     start_time TIME NOT NULL,
-    end_time TIME NOT NULL,
-    FOREIGN KEY (clinic_id) REFERENCES vital_fold.clinic(clinic_id),
-    FOREIGN KEY (provider_id) REFERENCES vital_fold.provider(provider_id)
+    end_time TIME NOT NULL
 );
 
 --=============================================================================
@@ -396,10 +390,7 @@ CREATE TABLE IF NOT EXISTS vital_fold.appointment (
     provider_id UUID NOT NULL,
     clinic_id UUID NOT NULL,
     appointment_date TIMESTAMP NOT NULL,
-    reason_for_visit VARCHAR(255) NOT NULL,
-    FOREIGN KEY (patient_id) REFERENCES vital_fold.patient(patient_id),
-    FOREIGN KEY (provider_id) REFERENCES vital_fold.provider(provider_id),
-    FOREIGN KEY (clinic_id) REFERENCES vital_fold.clinic(clinic_id)
+    reason_for_visit VARCHAR(255) NOT NULL
 );
 
 --=============================================================================
@@ -450,10 +441,7 @@ CREATE TABLE IF NOT EXISTS vital_fold.medical_record (
     clinic_id UUID NOT NULL,
     record_date TIMESTAMP NOT NULL,
     diagnosis VARCHAR(255) NOT NULL,
-    treatment VARCHAR(255) NOT NULL,
-    FOREIGN KEY (patient_id) REFERENCES vital_fold.patient(patient_id),
-    FOREIGN KEY (provider_id) REFERENCES vital_fold.provider(provider_id),
-    FOREIGN KEY (clinic_id) REFERENCES vital_fold.clinic(clinic_id)
+    treatment VARCHAR(255) NOT NULL
 );
 
 --=============================================================================

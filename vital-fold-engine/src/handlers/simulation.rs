@@ -9,12 +9,25 @@ use crate::errors::AppError;
 use crate::generators::{run_simulation, SimulationConfig};
 use crate::models::{MessageResponse, SimulationStatusResponse};
 use actix_web::{web, HttpResponse};
-use chrono::Utc;
 
 /// Start a new simulation run.
 ///
 /// If a simulation is already running, returns 409 Conflict.
 /// Otherwise, spawns an async task to run the simulation and returns 202 Accepted.
+#[utoipa::path(
+    post,
+    path = "/simulate",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 202, description = "Simulation started", body = MessageResponse),
+        (status = 400, description = "Simulation already running", body = String),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn start_simulation(
     pool: web::Data<DbPool>,
     state: web::Data<SimulatorState>,
@@ -29,7 +42,7 @@ pub async fn start_simulation(
 
     // Clone the pool for the async task
     let pool_clone = pool.get_ref().clone();
-    let state_clone = state.get_ref().clone();
+    let state_clone = state.clone(); // Clone the entire web::Data
 
     // Spawn a background task to run the simulation
     tokio::spawn(async move {
@@ -57,6 +70,19 @@ pub async fn start_simulation(
 ///
 /// Sets the running flag to false. The simulation task will exit gracefully
 /// on its next check.
+#[utoipa::path(
+    post,
+    path = "/simulate/stop",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Simulation stopped", body = MessageResponse),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpResponse, AppError> {
     state.stop();
     tracing::info!("Simulation stopped");
@@ -69,6 +95,19 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
 /// Get the current simulation status.
 ///
 /// Returns whether a simulation is currently running and metrics from the last run.
+#[utoipa::path(
+    get,
+    path = "/simulate/status",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Simulation status retrieved", body = SimulationStatusResponse),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse, AppError> {
     let running = state.is_running();
     let last_run = state.get_last_run();
@@ -86,6 +125,19 @@ pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse
 /// Reset all data by truncating vital_fold schema tables.
 ///
 /// WARNING: This is destructive. All generated data will be deleted.
+#[utoipa::path(
+    post,
+    path = "/simulate/reset",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "All data reset successfully", body = MessageResponse),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn reset_data(pool: web::Data<DbPool>) -> Result<HttpResponse, AppError> {
     // Check if a simulation is running - don't reset while running
     // (This check would require state, so we'll skip it for now)

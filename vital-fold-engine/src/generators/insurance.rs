@@ -28,12 +28,12 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
     for company_name in INSURANCE_COMPANIES {
         let id = Uuid::new_v4();
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.insurance_company (id, name, created_at) VALUES ($1, $2, $3)",
-            id,
-            company_name,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.insurance_company (id, name, created_at) VALUES ($1, $2, $3)"
         )
+        .bind(id)
+        .bind(company_name)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 
@@ -87,15 +87,15 @@ pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(),
         let company_id = ctx.insurance_company_ids[company_idx];
         let id = Uuid::new_v4();
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.insurance_plan (id, insurance_company_id, name, deductible, monthly_premium, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-            id,
-            company_id,
-            plan_name,
-            deductible,
-            monthly_premium,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.insurance_plan (id, insurance_company_id, name, deductible, monthly_premium, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
         )
+        .bind(id)
+        .bind(company_id)
+        .bind(plan_name)
+        .bind(deductible)
+        .bind(monthly_premium)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 

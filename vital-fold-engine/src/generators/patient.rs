@@ -10,6 +10,7 @@ use crate::errors::AppError;
 use chrono::{Local, Utc};
 use fake::faker::{address::en::*, name::en::*};
 use fake::Fake;
+use std::net::{IpAddr, Ipv4Addr};
 use uuid::Uuid;
 
 use super::SimulationContext;
@@ -31,14 +32,14 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
         let days_back = (18 * 365) + ((rand::random::<u32>() % (62 * 365)) as i64);
         let dob = today - chrono::Duration::days(days_back);
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.patient (id, first_name, last_name, date_of_birth, created_at) VALUES ($1, $2, $3, $4, $5)",
-            id,
-            &first_name,
-            &last_name,
-            dob,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.patient (id, first_name, last_name, date_of_birth, created_at) VALUES ($1, $2, $3, $4, $5)"
         )
+        .bind(id)
+        .bind(&first_name)
+        .bind(&last_name)
+        .bind(dob)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 
@@ -69,15 +70,15 @@ pub async fn generate_emergency_contacts(ctx: &mut SimulationContext) -> Result<
         let rel_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % relationships.len();
         let relationship = relationships[rel_idx];
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.emergency_contact (id, patient_id, name, phone, relationship, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-            id,
-            patient_id,
-            &name,
-            &phone,
-            relationship,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.emergency_contact (id, patient_id, name, phone, relationship, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
         )
+        .bind(id)
+        .bind(patient_id)
+        .bind(&name)
+        .bind(&phone)
+        .bind(relationship)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 
@@ -101,7 +102,10 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
 
         // Generate random phone and address
         let phone = format!("+1{:09}", Uuid::new_v4().as_u64_pair().0 % 1000000000);
-        let street_address = StreetAddress().fake::<String>();
+        let street_address = format!("{} {}",
+            (Uuid::new_v4().as_u64_pair().0 % 9999 + 1),
+            BuildingNumber().fake::<String>()
+        );
         let city = CityName().fake::<String>();
         let state = StateName().fake::<String>();
         let zipcode = ZipCode().fake::<String>();
@@ -111,18 +115,18 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
         let gender_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % genders.len();
         let gender = genders[gender_idx];
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.patient_demographics (id, patient_id, phone, street_address, city, state, zipcode, gender, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            id,
-            patient_id,
-            &phone,
-            &street_address,
-            &city,
-            &state,
-            &zipcode,
-            gender,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.patient_demographics (id, patient_id, phone, street_address, city, state, zipcode, gender, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
+        .bind(id)
+        .bind(patient_id)
+        .bind(&phone)
+        .bind(&street_address)
+        .bind(&city)
+        .bind(&state)
+        .bind(&zipcode)
+        .bind(gender)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 
@@ -155,14 +159,14 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
             // Generate random policy number
             let policy_number = format!("POL-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
 
-            sqlx::query!(
-                "INSERT INTO vital_fold.patient_insurance (id, patient_id, insurance_plan_id, policy_number, created_at) VALUES ($1, $2, $3, $4, $5)",
-                id,
-                patient_id,
-                plan_id,
-                &policy_number,
-                now
+            sqlx::query(
+                "INSERT INTO vital_fold.patient_insurance (id, patient_id, insurance_plan_id, policy_number, created_at) VALUES ($1, $2, $3, $4, $5)"
             )
+            .bind(id)
+            .bind(patient_id)
+            .bind(plan_id)
+            .bind(&policy_number)
+            .bind(now)
             .execute(&ctx.pool)
             .await?;
 

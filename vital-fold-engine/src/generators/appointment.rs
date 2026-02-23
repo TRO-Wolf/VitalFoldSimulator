@@ -53,16 +53,16 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
             let reason_idx = (patient_idx * 11 + appt_idx) % reasons.len();
             let reason_for_visit = reasons[reason_idx];
 
-            sqlx::query!(
-                "INSERT INTO vital_fold.appointment (id, patient_id, provider_id, clinic_id, appointment_time, reason_for_visit, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                id,
-                patient_id,
-                provider_id,
-                clinic_id,
-                appointment_time,
-                reason_for_visit,
-                now
+            sqlx::query(
+                "INSERT INTO vital_fold.appointment (id, patient_id, provider_id, clinic_id, appointment_time, reason_for_visit, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
             )
+            .bind(id)
+            .bind(patient_id)
+            .bind(provider_id)
+            .bind(clinic_id)
+            .bind(appointment_time)
+            .bind(reason_for_visit)
+            .bind(now)
             .execute(&ctx.pool)
             .await?;
 

@@ -32,14 +32,14 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
         let id = Uuid::new_v4();
         let clinic_name = format!("VF {} {} (Clinic {})", city, state, idx + 1);
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.clinic (id, name, city, state, created_at) VALUES ($1, $2, $3, $4, $5)",
-            id,
-            &clinic_name,
-            city,
-            state,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.clinic (id, name, city, state, created_at) VALUES ($1, $2, $3, $4, $5)"
         )
+        .bind(id)
+        .bind(&clinic_name)
+        .bind(city)
+        .bind(state)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 
@@ -63,15 +63,15 @@ pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<()
         for day_of_week in 1..=5 {
             let id = Uuid::new_v4();
 
-            sqlx::query!(
-                "INSERT INTO vital_fold.clinic_schedule (id, clinic_id, day_of_week, open_time, close_time, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-                id,
-                clinic_id,
-                day_of_week,
-                open_time,
-                close_time,
-                now
+            sqlx::query(
+                "INSERT INTO vital_fold.clinic_schedule (id, clinic_id, day_of_week, open_time, close_time, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
             )
+            .bind(id)
+            .bind(clinic_id)
+            .bind(day_of_week)
+            .bind(open_time)
+            .bind(close_time)
+            .bind(now)
             .execute(&ctx.pool)
             .await?;
 

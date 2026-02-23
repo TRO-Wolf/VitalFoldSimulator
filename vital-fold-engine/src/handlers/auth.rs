@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::db::DbPool;
 use crate::errors::AppError;
-use crate::middleware::auth::{generate_token, Claims};
+use crate::middleware::auth::generate_token;
 use crate::models::{AuthResponse, LoginRequest, RegisterRequest, User, UserProfile};
 use actix_web::{web, HttpResponse};
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -22,6 +22,17 @@ use uuid::Uuid;
 /// * `201 Created` with JWT token and user profile on success
 /// * `400 Bad Request` if email already exists
 /// * `500 Internal Server Error` if hashing or database fails
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/register",
+    tag = "Authentication",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "User registered successfully", body = AuthResponse),
+        (status = 400, description = "Invalid input or email already exists", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn register(
     pool: web::Data<DbPool>,
     cfg: web::Data<Config>,
@@ -44,13 +55,13 @@ pub async fn register(
     let user_id = Uuid::new_v4();
     let now = Utc::now();
 
-    sqlx::query!(
-        "INSERT INTO public.users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)",
-        user_id,
-        email,
-        password_hash,
-        now
+    sqlx::query(
+        "INSERT INTO public.users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)"
     )
+    .bind(user_id)
+    .bind(&email)
+    .bind(password_hash)
+    .bind(now)
     .execute(pool.get_ref())
     .await
     .map_err(|e| {
@@ -98,6 +109,18 @@ pub async fn register(
 /// * `200 OK` with JWT token and user profile on success
 /// * `401 Unauthorized` if email not found or password is wrong
 /// * `500 Internal Server Error` if database fails
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    tag = "Authentication",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "User logged in successfully", body = AuthResponse),
+        (status = 400, description = "Invalid input (empty email or password)", body = String),
+        (status = 401, description = "Invalid credentials", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn login(
     pool: web::Data<DbPool>,
     cfg: web::Data<Config>,
@@ -137,13 +160,14 @@ pub async fn login(
     let token = generate_token(user.id, user.email.clone(), cfg.get_ref())?;
 
     let user_profile = UserProfile::from(user);
+    let user_id = user_profile.id;
 
     let response = AuthResponse {
         token,
         user: user_profile,
     };
 
-    tracing::info!("User logged in: {}", user_profile.id);
+    tracing::info!("User logged in: {}", user_id);
 
     Ok(HttpResponse::Ok().json(response))
 }

@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::errors::AppError;
 use aws_config::BehaviorVersion;
-use aws_sdk_dsql::auth_token::AuthTokenGenerator;
-use sqlx::postgres::PgPoolOptions;
+use aws_sdk_dsql::auth_token::{AuthTokenGenerator, Config as DsqlTokenConfig};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
 /// Type alias for the database pool
 pub type DbPool = sqlx::PgPool;
@@ -11,8 +11,8 @@ pub type DbPool = sqlx::PgPool;
 ///
 /// This function:
 /// 1. Loads AWS configuration from the environment
-/// 2. Generates a short-lived IAM auth token
-/// 3. Creates a sqlx postgres pool with the token as the password
+/// 2. Generates a short-lived IAM auth token via SigV4 signing
+/// 3. Creates a sqlx postgres pool using PgConnectOptions (avoids URL-encoding issues)
 /// 4. Returns the pool ready for use
 ///
 /// # Arguments
@@ -25,30 +25,34 @@ pub type DbPool = sqlx::PgPool;
 /// IAM tokens expire in ~15 minutes. For long-running services, consider implementing
 /// a background task to refresh the pool on a schedule.
 pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
-    // Load AWS configuration with latest behavior version
+    // Load AWS configuration — picks up credentials from env vars, ~/.aws, or instance metadata
     let aws_config = aws_config::defaults(BehaviorVersion::latest())
         .region(aws_config::Region::new(cfg.dsql_region.clone()))
         .load()
         .await;
 
-    // Generate IAM authentication token
-    let token = generate_auth_token(&aws_config, &cfg.dsql_endpoint, &cfg.dsql_user)
+    // Generate a short-lived SigV4-signed IAM auth token
+    let token = generate_auth_token(&aws_config, &cfg.dsql_endpoint)
         .await
         .map_err(|e| {
             tracing::error!("Failed to generate DSQL auth token: {}", e);
             AppError::Database(format!("Failed to generate auth token: {}", e))
         })?;
 
-    // Construct database URL with IAM token as password
-    let database_url = format!(
-        "postgres://{}:{}@{}:5432/{}",
-        cfg.dsql_user, token, cfg.dsql_endpoint, cfg.dsql_db_name
-    );
+    // Use PgConnectOptions instead of a URL string — the token contains characters
+    // like '=' and '+' that would be misinterpreted if embedded directly in a URL.
+    let connect_opts = PgConnectOptions::new()
+        .host(&cfg.dsql_endpoint)
+        .port(5432)
+        .database(&cfg.dsql_db_name)
+        .username(&cfg.dsql_user)
+        .password(&token)
+        .ssl_mode(PgSslMode::Require);
 
     // Create the sqlx pool
     let pool = PgPoolOptions::new()
         .max_connections(cfg.db_pool_size as u32)
-        .connect(&database_url)
+        .connect_with(connect_opts)
         .await
         .map_err(|e| {
             tracing::error!("Failed to create database pool: {}", e);
@@ -64,30 +68,28 @@ pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
     Ok(pool)
 }
 
-/// Generate an IAM authentication token for Aurora DSQL.
+/// Generate a SigV4-signed IAM auth token for Aurora DSQL.
 ///
-/// This creates a short-lived token that can be used as a password
-/// for database connections. The token is signed by AWS credentials.
+/// The token is short-lived (~15 min) and used as the database password.
+/// The region is read from the SdkConfig; no separate region argument is needed.
 async fn generate_auth_token(
     aws_config: &aws_config::SdkConfig,
     endpoint: &str,
-    user: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let generator = AuthTokenGenerator::new(
-        aws_config
-            .credentials_provider()
-            .ok_or("No AWS credentials available")?,
-    );
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let token_config = DsqlTokenConfig::builder()
+        .hostname(endpoint)
+        .build()
+        .map_err(|e| format!("Failed to build DSQL token config: {}", e))?;
 
+    let generator = AuthTokenGenerator::new(token_config);
+
+    // db_connect_admin_auth_token signs using credentials from the SdkConfig
     let token = generator
-        .db_connect_admin_auth_token(
-            endpoint.parse()?,
-            user,
-            std::time::Duration::from_secs(900), // 15 minutes
-        )
-        .await?;
+        .db_connect_admin_auth_token(aws_config)
+        .await
+        .map_err(|e| format!("Failed to sign DSQL auth token: {}", e))?;
 
-    Ok(token)
+    Ok(token.to_string())
 }
 
 #[cfg(test)]

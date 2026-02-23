@@ -2,10 +2,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use utoipa::ToSchema;
 
 /// Row counts for the last completed simulation run.
 /// Used to track progress and populate the /simulate/status endpoint.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SimulationCounts {
     pub insurance_companies: usize,
     pub insurance_plans: usize,

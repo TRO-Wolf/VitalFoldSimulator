@@ -81,27 +81,34 @@ pub fn validate_token(token: &str, secret: &str) -> Result<Claims, AppError> {
 /// * `credentials` - The bearer token from the Authorization header
 ///
 /// # Returns
-/// * `Result<ServiceRequest, Error>` - The request with Claims inserted, or error
+/// * `Result<ServiceRequest, (Error, ServiceRequest)>` - The request with Claims inserted, or error with request
 pub async fn jwt_validator(
-    req: ServiceRequest,
+    mut req: ServiceRequest,
     credentials: BearerAuth,
-) -> Result<ServiceRequest, Error> {
-    let cfg = req
-        .app_data::<actix_web::web::Data<Config>>()
-        .map(|d| d.get_ref())
-        .ok_or_else(|| {
+) -> Result<ServiceRequest, (Error, ServiceRequest)> {
+    // Extract config first, before any early returns
+    let cfg = match req.app_data::<actix_web::web::Data<Config>>() {
+        Some(data) => data.get_ref(),
+        None => {
             tracing::error!("Config not found in app_data");
-            actix_web::error::ErrorInternalServerError("Internal error")
-        })?;
+            let err = actix_web::error::ErrorInternalServerError("Internal error");
+            return Err((err, req));
+        }
+    };
 
+    // Validate the token
     let token = credentials.token();
-    let claims = validate_token(token, &cfg.jwt_secret).map_err(|e| {
-        tracing::debug!("JWT validation error: {:?}", e);
-        actix_web::error::ErrorUnauthorized(e.to_string())
-    })?;
-
-    req.extensions_mut().insert(claims);
-    Ok(req)
+    match validate_token(token, &cfg.jwt_secret) {
+        Ok(claims) => {
+            req.extensions_mut().insert(claims);
+            Ok(req)
+        }
+        Err(e) => {
+            tracing::debug!("JWT validation error: {:?}", e);
+            let err = actix_web::error::ErrorUnauthorized(e.to_string());
+            Err((err, req))
+        }
+    }
 }
 
 #[cfg(test)]

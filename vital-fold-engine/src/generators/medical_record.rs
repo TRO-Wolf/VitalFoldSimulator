@@ -66,14 +66,14 @@ pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(),
         }
         let treatment = treatment_list.join("; ");
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.medical_record (id, patient_id, diagnosis, treatment, created_at) VALUES ($1, $2, $3, $4, $5)",
-            id,
-            patient_id,
-            diagnosis,
-            &treatment,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.medical_record (id, patient_id, diagnosis, treatment, created_at) VALUES ($1, $2, $3, $4, $5)"
         )
+        .bind(id)
+        .bind(patient_id)
+        .bind(diagnosis)
+        .bind(&treatment)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 

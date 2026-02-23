@@ -17,7 +17,7 @@ serde_json = "1"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 anyhow = "1"
-bigdecimal = "0.4"
+bigdecimal = { version = "0.4", features = ["serde"] }
 duckdb = { version = "1.4.4", features = ["bundled"] }
 polars = { version = "0.53", features = ["parquet", "csv", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }

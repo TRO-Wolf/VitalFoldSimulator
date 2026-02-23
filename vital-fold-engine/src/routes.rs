@@ -24,30 +24,32 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 ///   - `POST /simulate/reset` — Reset all data
 pub fn configure(cfg: &mut web::ServiceConfig) {
     // Public routes - no authentication required
+    cfg.route("/health", web::get().to(health::health_check));
+
     cfg.service(
-        web::scope("")
-            .route("/health", web::get().to(health::health_check))
-            .service(
-                web::scope("/api/v1/auth")
-                    .route("/register", web::post().to(auth::register))
-                    .route("/login", web::post().to(auth::login)),
-            ),
+        web::scope("/api/v1/auth")
+            .route("/register", web::post().to(auth::register))
+            .route("/login", web::post().to(auth::login))
     );
 
     // Protected routes - require valid JWT bearer token
     let auth_middleware = HttpAuthentication::bearer(jwt_validator);
 
+    // Protected user route
+    cfg.route("/api/v1/me",
+        web::get()
+            .to(user::me)
+            .wrap(auth_middleware.clone())
+    );
+
+    // Protected simulation routes
     cfg.service(
-        web::scope("")
+        web::scope("/simulate")
             .wrap(auth_middleware)
-            .route("/api/v1/me", web::get().to(user::me))
-            .service(
-                web::scope("/simulate")
-                    .route("", web::post().to(simulation::start_simulation))
-                    .route("/stop", web::post().to(simulation::stop_simulation))
-                    .route("/status", web::get().to(simulation::get_status))
-                    .route("/reset", web::post().to(simulation::reset_data)),
-            ),
+            .route("", web::post().to(simulation::start_simulation))
+            .route("/stop", web::post().to(simulation::stop_simulation))
+            .route("/status", web::get().to(simulation::get_status))
+            .route("/reset", web::post().to(simulation::reset_data))
     );
 }
 

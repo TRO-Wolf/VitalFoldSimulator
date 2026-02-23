@@ -2,7 +2,7 @@ use crate::db::DbPool;
 use crate::errors::AppError;
 use crate::middleware::auth::Claims;
 use crate::models::{User, UserProfile};
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
 use uuid::Uuid;
 
 /// Get the current authenticated user's profile.
@@ -14,6 +14,20 @@ use uuid::Uuid;
 /// * `401 Unauthorized` if no valid token provided
 /// * `404 Not Found` if user ID from token doesn't exist in database
 /// * `500 Internal Server Error` if database fails
+#[utoipa::path(
+    get,
+    path = "/api/v1/me",
+    tag = "User",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "User profile retrieved", body = UserProfile),
+        (status = 401, description = "Unauthorized - invalid or missing token", body = String),
+        (status = 404, description = "User not found", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
 pub async fn me(
     req: HttpRequest,
     pool: web::Data<DbPool>,

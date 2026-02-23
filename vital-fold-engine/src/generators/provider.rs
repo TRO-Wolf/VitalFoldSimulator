@@ -44,14 +44,14 @@ pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppEr
         let license_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % LICENSE_TYPES.len();
         let license_type = LICENSE_TYPES[license_idx];
 
-        sqlx::query!(
-            "INSERT INTO vital_fold.provider (id, name, specialty, license_type, created_at) VALUES ($1, $2, $3, $4, $5)",
-            id,
-            &name,
-            specialty,
-            license_type,
-            now
+        sqlx::query(
+            "INSERT INTO vital_fold.provider (id, name, specialty, license_type, created_at) VALUES ($1, $2, $3, $4, $5)"
         )
+        .bind(id)
+        .bind(&name)
+        .bind(specialty)
+        .bind(license_type)
+        .bind(now)
         .execute(&ctx.pool)
         .await?;
 

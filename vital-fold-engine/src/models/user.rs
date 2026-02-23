@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use utoipa::ToSchema;
 use crate::errors::AppError;
 
 /// User account in the system.
@@ -15,9 +16,11 @@ pub struct User {
 }
 
 /// Request body for user registration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterRequest {
+    #[schema(example = "user@example.com")]
     pub email: String,
+    #[schema(example = "SecurePassword123")]
     pub password: String,
 }
 
@@ -50,9 +53,11 @@ impl RegisterRequest {
 }
 
 /// Request body for user login.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
+    #[schema(example = "user@example.com")]
     pub email: String,
+    #[schema(example = "SecurePassword123")]
     pub password: String,
 }
 
@@ -76,7 +81,7 @@ impl LoginRequest {
 }
 
 /// Response body for successful authentication (register or login).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AuthResponse {
     pub token: String,
     pub user: UserProfile,
@@ -84,7 +89,7 @@ pub struct AuthResponse {
 
 /// Safe user profile returned in API responses.
 /// Never includes password or sensitive data.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, ToSchema)]
 pub struct UserProfile {
     pub id: Uuid,
     pub email: String,
@@ -102,13 +107,13 @@ impl From<User> for UserProfile {
 }
 
 /// Generic message response for simple operations.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MessageResponse {
     pub message: String,
 }
 
 /// Simulation status response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SimulationStatusResponse {
     pub running: bool,
     pub last_run: Option<DateTime<Utc>>,
