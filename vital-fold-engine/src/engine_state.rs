@@ -4,8 +4,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use utoipa::ToSchema;
 
-/// Row counts for the last completed simulation run.
-/// Used to track progress and populate the /simulate/status endpoint.
+/// Row counts from the last completed populate or simulate run.
+/// Populated by POST /populate (Aurora DSQL fields) and POST /simulate (DynamoDB fields).
+///
+/// Aurora DSQL fields — set by POST /populate:
+///   insurance_companies, insurance_plans, clinics, providers, patients,
+///   emergency_contacts, patient_demographics, patient_insurance,
+///   clinic_schedules, appointments, medical_records
+///
+/// DynamoDB fields — set by POST /simulate (day-of visit writes):
+///   dynamo_patient_visits, dynamo_patient_vitals
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SimulationCounts {
     pub insurance_companies: usize,
@@ -19,6 +27,10 @@ pub struct SimulationCounts {
     pub clinic_schedules: usize,
     pub appointments: usize,
     pub medical_records: usize,
+    /// DynamoDB patient_visit records written by the last simulate run.
+    pub dynamo_patient_visits: usize,
+    /// DynamoDB patient_vitals records written by the last simulate run.
+    pub dynamo_patient_vitals: usize,
 }
 
 /// Global state for the data simulator.

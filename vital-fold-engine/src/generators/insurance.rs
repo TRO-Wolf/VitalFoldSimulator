@@ -1,14 +1,34 @@
 /// Generate insurance companies and plans.
 ///
 /// Insurance companies are fixed (7 companies from domain values).
-/// Insurance plans are fixed with specific company associations.
+/// Insurance plans are dynamically generated based on SimulationConfig.
 
 use crate::errors::AppError;
-use bigdecimal::BigDecimal;
-use chrono::Utc;
-use uuid::Uuid;
+use chrono::NaiveDate;
+use fake::Fake;
+use fake::faker::internet::en::SafeEmail;
+use rand::Rng;
+use sqlx::types::BigDecimal;
 
 use super::SimulationContext;
+
+/// Generate a phone number guaranteed to fit within VARCHAR(20).
+/// Format: +1-NXX-NXX-XXXX (18 chars)
+fn gen_phone(rng: &mut impl Rng) -> String {
+    format!(
+        "+1-{}{}{}-{}{}{}-{}{}{}{}",
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+    )
+}
 
 /// Fixed insurance company names from domain values.
 const INSURANCE_COMPANIES: &[&str] = &[
@@ -23,21 +43,27 @@ const INSURANCE_COMPANIES: &[&str] = &[
 
 /// Generate the 7 fixed insurance companies and insert them into the database.
 pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
+    use rand::Rng;
 
     for company_name in INSURANCE_COMPANIES {
-        let id = Uuid::new_v4();
+        let (phone, tax_id) = {
+            use rand::thread_rng;
+            let mut rng = thread_rng();
+            (gen_phone(&mut rng), rng.gen_range(100_000_000..999_999_999))
+        };
+        let email = SafeEmail().fake::<String>();
 
-        sqlx::query(
-            "INSERT INTO vital_fold.insurance_company (id, name, created_at) VALUES ($1, $2, $3)"
+        let result: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO vital_fold.insurance_company (company_name, email, phone_number, tax_id_number) VALUES ($1, $2, $3, $4) RETURNING company_id"
         )
-        .bind(id)
         .bind(company_name)
-        .bind(now)
-        .execute(&ctx.pool)
+        .bind(email)
+        .bind(phone)
+        .bind(tax_id)
+        .fetch_one(&ctx.pool)
         .await?;
 
-        ctx.insurance_company_ids.push(id);
+        ctx.company_ids.push(result.0);
         ctx.counts.insurance_companies += 1;
     }
 
@@ -51,56 +77,44 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
 
 /// Generate insurance plans for each company and insert them into the database.
 ///
-/// Each company gets 2-3 plans with different premium tiers.
+/// Each company gets plans_per_company plans.
 pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
+    use rand::Rng;
+    let plans_per_company = ctx.config.plans_per_company;
 
-    // Define plans for each company: (company_index, plan_name, deductible, monthly_premium)
-    let plans = vec![
-        // Orange Spear
-        (0, "Basic", BigDecimal::from(1000), BigDecimal::from(150)),
-        (0, "Standard", BigDecimal::from(500), BigDecimal::from(250)),
-        (0, "Premium", BigDecimal::from(0), BigDecimal::from(400)),
-        // Care Medical
-        (1, "Essential", BigDecimal::from(1500), BigDecimal::from(140)),
-        (1, "Preferred", BigDecimal::from(750), BigDecimal::from(270)),
-        // Cade Medical
-        (2, "Bronze", BigDecimal::from(2000), BigDecimal::from(130)),
-        (2, "Silver", BigDecimal::from(1000), BigDecimal::from(240)),
-        (2, "Gold", BigDecimal::from(500), BigDecimal::from(350)),
-        // Multiplied Health
-        (3, "Classic", BigDecimal::from(1200), BigDecimal::from(160)),
-        (3, "Advanced", BigDecimal::from(600), BigDecimal::from(280)),
-        // Octi Care
-        (4, "Basic", BigDecimal::from(1800), BigDecimal::from(120)),
-        (4, "Plus", BigDecimal::from(900), BigDecimal::from(220)),
-        // Tatnay
-        (5, "Standard", BigDecimal::from(1500), BigDecimal::from(145)),
-        (5, "Premium", BigDecimal::from(750), BigDecimal::from(290)),
-        // Caymana
-        (6, "Plan A", BigDecimal::from(2000), BigDecimal::from(125)),
-        (6, "Plan B", BigDecimal::from(1000), BigDecimal::from(235)),
-        (6, "Plan C", BigDecimal::from(250), BigDecimal::from(380)),
-    ];
+    for company_id in &ctx.company_ids {
+        for i in 0..plans_per_company {
+            let plan_name = format!("Plan {}", i + 1);
 
-    for (company_idx, plan_name, deductible, monthly_premium) in plans {
-        let company_id = ctx.insurance_company_ids[company_idx];
-        let id = Uuid::new_v4();
+            let (deductible, copay, prior_auth, active) = {
+                use rand::thread_rng;
+                let mut rng = thread_rng();
+                (
+                    BigDecimal::from(rng.gen_range(250..2000)),
+                    BigDecimal::from(rng.gen_range(20..150)),
+                    rng.gen_bool(0.5),
+                    rng.gen_bool(0.8),
+                )
+            };
 
-        sqlx::query(
-            "INSERT INTO vital_fold.insurance_plan (id, insurance_company_id, name, deductible, monthly_premium, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
-        )
-        .bind(id)
-        .bind(company_id)
-        .bind(plan_name)
-        .bind(deductible)
-        .bind(monthly_premium)
-        .bind(now)
-        .execute(&ctx.pool)
-        .await?;
+            let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
 
-        ctx.insurance_plan_ids.push(id);
-        ctx.counts.insurance_plans += 1;
+            let result: (uuid::Uuid,) = sqlx::query_as(
+                "INSERT INTO vital_fold.insurance_plan (plan_name, company_id, deductible_amount, copay_amount, prior_auth_required, active_plan, active_start_date) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING insurance_plan_id"
+            )
+            .bind(plan_name)
+            .bind(company_id)
+            .bind(deductible)
+            .bind(copay)
+            .bind(prior_auth)
+            .bind(active)
+            .bind(start_date)
+            .fetch_one(&ctx.pool)
+            .await?;
+
+            ctx.plan_ids.push(result.0);
+            ctx.counts.insurance_plans += 1;
+        }
     }
 
     tracing::info!("Generated {} insurance plans", ctx.counts.insurance_plans);

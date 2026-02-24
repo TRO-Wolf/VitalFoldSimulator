@@ -3,35 +3,25 @@ use crate::errors::AppError;
 use aws_config::BehaviorVersion;
 use aws_sdk_dsql::auth_token::{AuthTokenGenerator, Config as DsqlTokenConfig};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use std::time::Duration;
 
 /// Type alias for the database pool
 pub type DbPool = sqlx::PgPool;
 
+/// How often to refresh the IAM auth token. DSQL tokens expire in ~15 min;
+/// refresh every 12 minutes to stay well clear of that boundary.
+const TOKEN_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60);
+
 /// Create a connection pool for Aurora DSQL with IAM authentication.
 ///
-/// This function:
-/// 1. Loads AWS configuration from the environment
-/// 2. Generates a short-lived IAM auth token via SigV4 signing
-/// 3. Creates a sqlx postgres pool using PgConnectOptions (avoids URL-encoding issues)
-/// 4. Returns the pool ready for use
-///
-/// # Arguments
-/// * `cfg` - Application configuration containing DSQL endpoint and credentials
-///
-/// # Returns
-/// * `Result<DbPool, AppError>` - A ready-to-use connection pool
-///
-/// # Note
-/// IAM tokens expire in ~15 minutes. For long-running services, consider implementing
-/// a background task to refresh the pool on a schedule.
+/// Uses PgConnectOptions (not a URL string) because IAM tokens contain characters
+/// like '=' and '+' that would be misinterpreted if embedded in a URL.
 pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
-    // Load AWS configuration — picks up credentials from env vars, ~/.aws, or instance metadata
     let aws_config = aws_config::defaults(BehaviorVersion::latest())
         .region(aws_config::Region::new(cfg.dsql_region.clone()))
         .load()
         .await;
 
-    // Generate a short-lived SigV4-signed IAM auth token
     let token = generate_auth_token(&aws_config, &cfg.dsql_endpoint)
         .await
         .map_err(|e| {
@@ -39,17 +29,8 @@ pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
             AppError::Database(format!("Failed to generate auth token: {}", e))
         })?;
 
-    // Use PgConnectOptions instead of a URL string — the token contains characters
-    // like '=' and '+' that would be misinterpreted if embedded directly in a URL.
-    let connect_opts = PgConnectOptions::new()
-        .host(&cfg.dsql_endpoint)
-        .port(5432)
-        .database(&cfg.dsql_db_name)
-        .username(&cfg.dsql_user)
-        .password(&token)
-        .ssl_mode(PgSslMode::Require);
+    let connect_opts = build_connect_opts(cfg, &token);
 
-    // Create the sqlx pool
     let pool = PgPoolOptions::new()
         .max_connections(cfg.db_pool_size as u32)
         .connect_with(connect_opts)
@@ -60,7 +41,7 @@ pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
         })?;
 
     tracing::info!(
-        "Database pool created successfully (max_size: {}, endpoint: {})",
+        "Database pool created (max_size: {}, endpoint: {})",
         cfg.db_pool_size,
         cfg.dsql_endpoint
     );
@@ -68,10 +49,50 @@ pub async fn create_pool(cfg: &Config) -> Result<DbPool, AppError> {
     Ok(pool)
 }
 
-/// Generate a SigV4-signed IAM auth token for Aurora DSQL.
+/// Spawn a background task that refreshes the DSQL IAM token every
+/// TOKEN_REFRESH_INTERVAL seconds by calling `pool.set_connect_options`.
 ///
-/// The token is short-lived (~15 min) and used as the database password.
-/// The region is read from the SdkConfig; no separate region argument is needed.
+/// This updates the options used for **new** connections while leaving any
+/// connections already checked out untouched. The pool itself (and all
+/// `web::Data<DbPool>` clones) remain valid — no restart required.
+pub fn spawn_token_refresh_task(pool: DbPool, cfg: Config) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(TOKEN_REFRESH_INTERVAL).await;
+
+            let aws_config = aws_config::defaults(BehaviorVersion::latest())
+                .region(aws_config::Region::new(cfg.dsql_region.clone()))
+                .load()
+                .await;
+
+            match generate_auth_token(&aws_config, &cfg.dsql_endpoint).await {
+                Ok(token) => {
+                    let new_opts = build_connect_opts(&cfg, &token);
+                    pool.set_connect_options(new_opts);
+                    tracing::info!("DSQL IAM token refreshed successfully");
+                }
+                Err(e) => {
+                    // Log and continue — the previous token may still be valid
+                    // for the remaining window; the next iteration will retry.
+                    tracing::error!("Failed to refresh DSQL IAM token: {}", e);
+                }
+            }
+        }
+    });
+}
+
+/// Build PgConnectOptions from config and a freshly-generated token.
+fn build_connect_opts(cfg: &Config, token: &str) -> PgConnectOptions {
+    PgConnectOptions::new()
+        .host(&cfg.dsql_endpoint)
+        .port(5432)
+        .database(&cfg.dsql_db_name)
+        .username(&cfg.dsql_user)
+        .password(token)
+        .ssl_mode(PgSslMode::Require)
+}
+
+/// Generate a SigV4-signed IAM auth token for Aurora DSQL.
 async fn generate_auth_token(
     aws_config: &aws_config::SdkConfig,
     endpoint: &str,
@@ -83,7 +104,6 @@ async fn generate_auth_token(
 
     let generator = AuthTokenGenerator::new(token_config);
 
-    // db_connect_admin_auth_token signs using credentials from the SdkConfig
     let token = generator
         .db_connect_admin_auth_token(aws_config)
         .await
@@ -98,7 +118,6 @@ mod tests {
 
     #[test]
     fn test_pool_type_alias() {
-        // This test verifies the DbPool type alias is correct
         // Runtime test would require actual AWS configuration
     }
 }

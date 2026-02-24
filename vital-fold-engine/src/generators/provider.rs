@@ -4,23 +4,37 @@
 /// Each provider is assigned a random specialty and medical license type.
 
 use crate::errors::AppError;
-use chrono::Utc;
-use fake::faker::name::en::*;
 use fake::Fake;
-use uuid::Uuid;
+use fake::faker::name::en::{FirstName, LastName};
+use fake::faker::internet::en::SafeEmail;
+use rand::Rng;
+
+/// Generate a phone number guaranteed to fit within VARCHAR(20).
+/// Format: +1-NXX-NXX-XXXX (18 chars)
+fn gen_phone(rng: &mut impl Rng) -> String {
+    format!(
+        "+1-{}{}{}-{}{}{}-{}{}{}{}",
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+    )
+}
 
 use super::SimulationContext;
 
-/// Medical specialties for providers.
+/// Cardiac-focused specialties for providers.
 const SPECIALTIES: &[&str] = &[
-    "Cardiology",
-    "Internal Medicine",
-    "Family Medicine",
-    "Emergency Medicine",
-    "Neurology",
-    "Pulmonology",
-    "Gastroenterology",
-    "Rheumatology",
+    "Cardiologist",
+    "Cardiac Surgeon",
+    "Electrophysiologist",
+    "Interventional Cardiologist",
 ];
 
 /// Medical license types.
@@ -28,34 +42,36 @@ const LICENSE_TYPES: &[&str] = &["MD", "DO"];
 
 /// Generate N providers with random names and specialties.
 pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
+    use rand::Rng;
 
-    for _ in 0..ctx.config.num_providers {
-        let id = Uuid::new_v4();
+    for _ in 0..ctx.config.providers {
+        let first_name: String = FirstName().fake();
+        let last_name: String = LastName().fake();
 
-        // Generate a random provider name using the `fake` crate
-        let name = Name().fake::<String>();
+        let (specialty, license_type, phone, email) = {
+            use rand::thread_rng;
+            let mut rng = thread_rng();
+            (
+                SPECIALTIES[rng.gen_range(0..SPECIALTIES.len())],
+                LICENSE_TYPES[rng.gen_range(0..LICENSE_TYPES.len())],
+                gen_phone(&mut rng),
+                SafeEmail().fake::<String>(),
+            )
+        };
 
-        // Randomly select a specialty
-        let specialty_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % SPECIALTIES.len();
-        let specialty = SPECIALTIES[specialty_idx];
-
-        // Randomly select a license type
-        let license_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % LICENSE_TYPES.len();
-        let license_type = LICENSE_TYPES[license_idx];
-
-        sqlx::query(
-            "INSERT INTO vital_fold.provider (id, name, specialty, license_type, created_at) VALUES ($1, $2, $3, $4, $5)"
+        let result: (uuid::Uuid,) = sqlx::query_as(
+            "INSERT INTO vital_fold.provider (first_name, last_name, specialty, license_type, phone_number, email) VALUES ($1, $2, $3, $4, $5, $6) RETURNING provider_id"
         )
-        .bind(id)
-        .bind(&name)
+        .bind(&first_name)
+        .bind(&last_name)
         .bind(specialty)
         .bind(license_type)
-        .bind(now)
-        .execute(&ctx.pool)
+        .bind(&phone)
+        .bind(&email)
+        .fetch_one(&ctx.pool)
         .await?;
 
-        ctx.provider_ids.push(id);
+        ctx.provider_ids.push(result.0);
         ctx.counts.providers += 1;
     }
 

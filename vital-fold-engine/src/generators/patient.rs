@@ -1,194 +1,343 @@
-/// Generate patients with emergency contacts, demographics, and insurance associations.
-///
-/// Each patient gets:
-/// - A random name and date of birth
-/// - An emergency contact (random)
-/// - Demographics (phone, address, insurance info)
-/// - Insurance association (1-3 random plans)
-
 use crate::errors::AppError;
-use chrono::{Local, Utc};
-use fake::faker::{address::en::*, name::en::*};
-use fake::Fake;
-use std::net::{IpAddr, Ipv4Addr};
-use uuid::Uuid;
-
+use rand::Rng;
 use super::SimulationContext;
 
-/// Generate N patients with random names and dates of birth.
+/// Aurora DSQL maximum rows per transaction statement.
+/// Keep well under the 3000-row hard limit.
+const DSQL_BATCH_SIZE: usize = 2500;
+
+/// Generate a phone number guaranteed to fit within VARCHAR(20).
+/// Format: +1-NXX-NXX-XXXX (18 chars)
+fn gen_phone(rng: &mut impl Rng) -> String {
+    format!(
+        "+1-{}{}{}-{}{}{}-{}{}{}{}",
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(2..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+        rng.gen_range(0..=9),
+    )
+}
+
+struct PatientBatch {
+    ec_ids:           Vec<uuid::Uuid>,
+    ec_first_names:   Vec<String>,
+    ec_last_names:    Vec<String>,
+    ec_relationships: Vec<String>,
+    ec_phones:        Vec<String>,
+    ec_emails:        Vec<String>,
+
+    pt_first_names:   Vec<String>,
+    pt_last_names:    Vec<String>,
+    pt_dobs:          Vec<chrono::NaiveDate>,
+    pt_streets:       Vec<String>,
+    pt_cities:        Vec<String>,
+    pt_states:        Vec<String>,
+    pt_zips:          Vec<String>,
+    pt_phones:        Vec<String>,
+    pt_emails:        Vec<String>,
+    pt_reg_dates:     Vec<chrono::NaiveDate>,
+}
+
+/// Build all patient + emergency contact row data in memory (no awaits).
+/// Returns the batch so the caller can drop all RNG state before awaiting.
+fn build_patient_batch(n: usize) -> PatientBatch {
+    use fake::Fake;
+    use fake::faker::name::en::{FirstName, LastName};
+    use fake::faker::address::en::{StreetName, CityName, StateAbbr, ZipCode};
+    use fake::faker::internet::en::SafeEmail;
+    use chrono::Local;
+    use rand::thread_rng;
+    use uuid::Uuid;
+
+    let today = Local::now().naive_local().date();
+    let mut rng = thread_rng();
+    let relationships = ["Spouse", "Parent", "Sibling", "Child", "Friend"];
+
+    let mut batch = PatientBatch {
+        ec_ids:           Vec::with_capacity(n),
+        ec_first_names:   Vec::with_capacity(n),
+        ec_last_names:    Vec::with_capacity(n),
+        ec_relationships: Vec::with_capacity(n),
+        ec_phones:        Vec::with_capacity(n),
+        ec_emails:        Vec::with_capacity(n),
+
+        pt_first_names:   Vec::with_capacity(n),
+        pt_last_names:    Vec::with_capacity(n),
+        pt_dobs:          Vec::with_capacity(n),
+        pt_streets:       Vec::with_capacity(n),
+        pt_cities:        Vec::with_capacity(n),
+        pt_states:        Vec::with_capacity(n),
+        pt_zips:          Vec::with_capacity(n),
+        pt_phones:        Vec::with_capacity(n),
+        pt_emails:        Vec::with_capacity(n),
+        pt_reg_dates:     Vec::with_capacity(n),
+    };
+
+    for _ in 0..n {
+        batch.ec_ids.push(Uuid::new_v4());
+        batch.ec_first_names.push(loop {
+            let name: String = FirstName().fake();
+            if name != "Adolf" { break name; }
+        });
+        batch.ec_last_names.push(LastName().fake());
+        batch.ec_relationships.push(relationships[rng.gen_range(0..relationships.len())].to_string());
+        batch.ec_phones.push(gen_phone(&mut rng));
+        batch.ec_emails.push(SafeEmail().fake());
+
+        batch.pt_first_names.push(loop {
+            let name: String = FirstName().fake();
+            if name != "Adolf" { break name; }
+        });
+        batch.pt_last_names.push(LastName().fake());
+        let days_back = (18 * 365) + rng.gen_range(0..(62 * 365)) as i64;
+        batch.pt_dobs.push(today - chrono::Duration::days(days_back));
+        batch.pt_streets.push(StreetName().fake());
+        batch.pt_cities.push(CityName().fake());
+        batch.pt_states.push(StateAbbr().fake());
+        batch.pt_zips.push(ZipCode().fake());
+        batch.pt_phones.push(gen_phone(&mut rng));
+        batch.pt_emails.push(SafeEmail().fake());
+        batch.pt_reg_dates.push(today);
+    }
+
+    batch
+}
+
+/// Generate N patients and their emergency contacts in chunked bulk INSERT passes.
+///
+/// Each chunk is ≤ DSQL_BATCH_SIZE rows to stay under Aurora DSQL's 3000-row
+/// per-transaction limit. Emergency contact UUIDs are pre-generated client-side
+/// so patients can reference them without a per-row UPDATE.
 pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
+    let n = ctx.config.patients;
 
-    for _ in 0..ctx.config.num_patients {
-        let id = Uuid::new_v4();
+    // Generate all row data synchronously — rng is dropped before any await.
+    let batch = build_patient_batch(n);
 
-        // Generate random patient name
-        let first_name = FirstName().fake::<String>();
-        let last_name = LastName().fake::<String>();
-        let full_name = format!("{} {}", first_name, last_name);
+    // Process in chunks to respect the DSQL 3000-row per-transaction limit.
+    for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
+        let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(n);
+        let chunk_size = chunk_end - chunk_start;
+        let r = chunk_start..chunk_end;
 
-        // Generate random date of birth (ages 18-80)
-        let today = Local::now().naive_local().date();
-        let days_back = (18 * 365) + ((rand::random::<u32>() % (62 * 365)) as i64);
-        let dob = today - chrono::Duration::days(days_back);
+        // Bulk INSERT emergency contacts for this chunk — one round-trip.
+        let ec_ids_chunk    = &batch.ec_ids[r.clone()];
+        let ec_placeholder  = ec_ids_chunk; // temp patient_id, fixed in UPDATE below
 
         sqlx::query(
-            "INSERT INTO vital_fold.patient (id, first_name, last_name, date_of_birth, created_at) VALUES ($1, $2, $3, $4, $5)"
+            "INSERT INTO vital_fold.emergency_contact \
+             (emergency_contact_id, patient_id, first_name, last_name, relationship, phone_number, email) \
+             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])"
         )
-        .bind(id)
-        .bind(&first_name)
-        .bind(&last_name)
-        .bind(dob)
-        .bind(now)
+        .bind(ec_ids_chunk)
+        .bind(ec_placeholder)
+        .bind(&batch.ec_first_names[r.clone()])
+        .bind(&batch.ec_last_names[r.clone()])
+        .bind(&batch.ec_relationships[r.clone()])
+        .bind(&batch.ec_phones[r.clone()])
+        .bind(&batch.ec_emails[r.clone()])
         .execute(&ctx.pool)
         .await?;
 
-        ctx.patient_ids.push(id);
-        ctx.counts.patients += 1;
-    }
+        ctx.counts.emergency_contacts += chunk_size;
 
-    tracing::info!("Generated {} patients", ctx.counts.patients);
+        // Bulk INSERT patients for this chunk — one round-trip.
+        let ec_id_strs: Vec<String> = ec_ids_chunk.iter().map(|id| id.to_string()).collect();
 
-    Ok(())
-}
-
-/// Generate emergency contacts for each patient.
-pub async fn generate_emergency_contacts(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
-
-    for patient_id in &ctx.patient_ids {
-        let id = Uuid::new_v4();
-
-        // Generate random emergency contact name
-        let name = Name().fake::<String>();
-
-        // Generate random phone number (using address faker as placeholder)
-        let phone = format!("+1{:09}", Uuid::new_v4().as_u64_pair().0 % 1000000000);
-
-        // Generate random relationship
-        let relationships = vec!["Spouse", "Parent", "Sibling", "Child", "Friend"];
-        let rel_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % relationships.len();
-        let relationship = relationships[rel_idx];
-
-        sqlx::query(
-            "INSERT INTO vital_fold.emergency_contact (id, patient_id, name, phone, relationship, created_at) VALUES ($1, $2, $3, $4, $5, $6)"
+        let patient_rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            "INSERT INTO vital_fold.patient \
+             (first_name, last_name, date_of_birth, street_address, city, state, zip_code, \
+              phone_number, email, registration_date, emergency_contact_id) \
+             SELECT * FROM UNNEST($1::text[], $2::text[], $3::date[], $4::text[], $5::text[], \
+                                  $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::text[]) \
+             RETURNING patient_id"
         )
-        .bind(id)
-        .bind(patient_id)
-        .bind(&name)
-        .bind(&phone)
-        .bind(relationship)
-        .bind(now)
+        .bind(&batch.pt_first_names[r.clone()])
+        .bind(&batch.pt_last_names[r.clone()])
+        .bind(&batch.pt_dobs[r.clone()])
+        .bind(&batch.pt_streets[r.clone()])
+        .bind(&batch.pt_cities[r.clone()])
+        .bind(&batch.pt_states[r.clone()])
+        .bind(&batch.pt_zips[r.clone()])
+        .bind(&batch.pt_phones[r.clone()])
+        .bind(&batch.pt_emails[r.clone()])
+        .bind(&batch.pt_reg_dates[r.clone()])
+        .bind(&ec_id_strs)
+        .fetch_all(&ctx.pool)
+        .await?;
+
+        let real_patient_ids: Vec<uuid::Uuid> = patient_rows.iter().map(|row| row.0).collect();
+
+        // Bulk UPDATE emergency contacts with the correct patient_ids — one round-trip.
+        sqlx::query(
+            "UPDATE vital_fold.emergency_contact ec \
+             SET patient_id = u.patient_id \
+             FROM UNNEST($1::uuid[], $2::uuid[]) AS u(ec_id, patient_id) \
+             WHERE ec.emergency_contact_id = u.ec_id"
+        )
+        .bind(ec_ids_chunk)
+        .bind(&real_patient_ids)
         .execute(&ctx.pool)
         .await?;
 
-        ctx.counts.emergency_contacts += 1;
-    }
-
-    tracing::info!(
-        "Generated {} emergency contacts",
-        ctx.counts.emergency_contacts
-    );
-
-    Ok(())
-}
-
-/// Generate patient demographics for each patient.
-pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
-
-    for patient_id in &ctx.patient_ids {
-        let id = Uuid::new_v4();
-
-        // Generate random phone and address
-        let phone = format!("+1{:09}", Uuid::new_v4().as_u64_pair().0 % 1000000000);
-        let street_address = format!("{} {}",
-            (Uuid::new_v4().as_u64_pair().0 % 9999 + 1),
-            BuildingNumber().fake::<String>()
+        // Populate context for downstream generators.
+        ctx.patient_ids.extend_from_slice(&real_patient_ids);
+        ctx.patient_data.extend(
+            real_patient_ids.into_iter()
+                .zip(batch.pt_first_names[r.clone()].iter().cloned())
+                .zip(batch.pt_last_names[r.clone()].iter().cloned())
+                .zip(batch.pt_dobs[r.clone()].iter().copied())
+                .map(|(((id, first), last), dob)| (id, first, last, dob))
         );
-        let city = CityName().fake::<String>();
-        let state = StateName().fake::<String>();
-        let zipcode = ZipCode().fake::<String>();
+        ctx.counts.patients += chunk_size;
+    }
 
-        // Generate random gender
-        let genders = vec!["M", "F", "Other"];
-        let gender_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % genders.len();
-        let gender = genders[gender_idx];
+    tracing::info!("Generated {} patients and {} emergency contacts", ctx.counts.patients, ctx.counts.emergency_contacts);
+
+    Ok(())
+}
+
+/// No-op: emergency contact generation is now performed inside generate_patients.
+pub async fn generate_emergency_contacts(_ctx: &mut SimulationContext) -> Result<(), AppError> {
+    Ok(())
+}
+
+/// Generate patient demographics — chunked bulk INSERT via UNNEST.
+///
+/// Uses data cached in ctx.patient_data from generate_patients, avoiding a DB round-trip.
+pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Result<(), AppError> {
+    use chrono::Local;
+
+    let today = Local::now().naive_local().date();
+    let n = ctx.patient_data.len();
+
+    // Build all column vecs synchronously so rng is dropped before any await.
+    let (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v) = {
+        use rand::thread_rng;
+
+        let ethnicities = ["Caucasian", "African American", "Hispanic", "Asian", "Other"];
+        let genders     = ["Male", "Female", "Other"];
+        let mut rng     = thread_rng();
+
+        let mut pt_ids:        Vec<uuid::Uuid>       = Vec::with_capacity(n);
+        let mut first_names:   Vec<String>            = Vec::with_capacity(n);
+        let mut last_names:    Vec<String>            = Vec::with_capacity(n);
+        let mut dobs:          Vec<chrono::NaiveDate> = Vec::with_capacity(n);
+        let mut ages:          Vec<i64>               = Vec::with_capacity(n);
+        let mut ssns:          Vec<String>            = Vec::with_capacity(n);
+        let mut ethnicities_v: Vec<String>            = Vec::with_capacity(n);
+        let mut genders_v:     Vec<String>            = Vec::with_capacity(n);
+
+        for (patient_id, first_name, last_name, dob) in &ctx.patient_data {
+            let age = (today - *dob).num_days() / 365;
+            let ssn = format!("{:03}-{:02}-{:04}", rng.gen_range(0..1000), rng.gen_range(0..100), rng.gen_range(0..10000));
+
+            pt_ids.push(*patient_id);
+            first_names.push(first_name.clone());
+            last_names.push(last_name.clone());
+            dobs.push(*dob);
+            ages.push(age);
+            ssns.push(ssn);
+            ethnicities_v.push(ethnicities[rng.gen_range(0..ethnicities.len())].to_string());
+            genders_v.push(genders[rng.gen_range(0..genders.len())].to_string());
+        }
+
+        (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v)
+    }; // rng dropped here before any await
+
+    for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
+        let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(n);
+        let r = chunk_start..chunk_end;
 
         sqlx::query(
-            "INSERT INTO vital_fold.patient_demographics (id, patient_id, phone, street_address, city, state, zipcode, gender, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+            "INSERT INTO vital_fold.patient_demographics \
+             (patient_id, first_name, last_name, date_of_birth, age, ssn, ethnicity, birth_gender) \
+             SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::text[], $4::date[], $5::bigint[], $6::text[], $7::text[], $8::text[])"
         )
-        .bind(id)
-        .bind(patient_id)
-        .bind(&phone)
-        .bind(&street_address)
-        .bind(&city)
-        .bind(&state)
-        .bind(&zipcode)
-        .bind(gender)
-        .bind(now)
+        .bind(&pt_ids[r.clone()])
+        .bind(&first_names[r.clone()])
+        .bind(&last_names[r.clone()])
+        .bind(&dobs[r.clone()])
+        .bind(&ages[r.clone()])
+        .bind(&ssns[r.clone()])
+        .bind(&ethnicities_v[r.clone()])
+        .bind(&genders_v[r.clone()])
         .execute(&ctx.pool)
         .await?;
 
-        ctx.counts.patient_demographics += 1;
+        ctx.counts.patient_demographics += chunk_end - chunk_start;
     }
 
-    tracing::info!(
-        "Generated {} patient demographics",
-        ctx.counts.patient_demographics
-    );
+    tracing::info!("Generated {} patient demographics", ctx.counts.patient_demographics);
 
     Ok(())
 }
 
-/// Generate patient insurance associations (1-3 plans per patient).
+/// Generate patient insurance associations — chunked bulk INSERT via UNNEST.
 pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let now = Utc::now();
+    use chrono::Local;
 
-    for patient_id in &ctx.patient_ids {
-        // Each patient gets 1-3 insurance plans
-        let num_plans = 1 + ((Uuid::new_v4().as_u64_pair().0 % 3) as usize);
+    let today = Local::now().naive_local().date();
+    let n     = ctx.patient_ids.len();
 
-        for _ in 0..num_plans {
-            let id = Uuid::new_v4();
+    // Build column vecs synchronously so rng is dropped before any await.
+    let (pt_ids, plan_ids, policy_nums, starts, ends) = {
+        use rand::thread_rng;
 
-            // Random plan selection
-            let plan_idx = (Uuid::new_v4().as_u64_pair().0 as usize) % ctx.insurance_plan_ids.len();
-            let plan_id = ctx.insurance_plan_ids[plan_idx];
+        let mut rng = thread_rng();
 
-            // Generate random policy number
-            let policy_number = format!("POL-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
+        let mut pt_ids:      Vec<uuid::Uuid>                = Vec::with_capacity(n);
+        let mut plan_ids:    Vec<uuid::Uuid>                = Vec::with_capacity(n);
+        let mut policy_nums: Vec<String>                    = Vec::with_capacity(n);
+        let mut starts:      Vec<chrono::NaiveDate>         = Vec::with_capacity(n);
+        let mut ends:        Vec<Option<chrono::NaiveDate>> = Vec::with_capacity(n);
 
-            sqlx::query(
-                "INSERT INTO vital_fold.patient_insurance (id, patient_id, insurance_plan_id, policy_number, created_at) VALUES ($1, $2, $3, $4, $5)"
-            )
-            .bind(id)
-            .bind(patient_id)
-            .bind(plan_id)
-            .bind(&policy_number)
-            .bind(now)
-            .execute(&ctx.pool)
-            .await?;
+        for &patient_id in &ctx.patient_ids {
+            let plan_id = ctx.plan_ids[rng.gen_range(0..ctx.plan_ids.len())];
+            let policy  = format!("POL-{:08X}", rng.gen::<u32>());
+            let end     = if rng.gen_bool(0.2) {
+                Some(today - chrono::Duration::days(rng.gen_range(30..365)))
+            } else {
+                None
+            };
 
-            ctx.counts.patient_insurance += 1;
+            pt_ids.push(patient_id);
+            plan_ids.push(plan_id);
+            policy_nums.push(policy);
+            starts.push(today);
+            ends.push(end);
         }
+
+        (pt_ids, plan_ids, policy_nums, starts, ends)
+    }; // rng dropped here before any await
+
+    for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
+        let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(n);
+        let r = chunk_start..chunk_end;
+
+        sqlx::query(
+            "INSERT INTO vital_fold.patient_insurance \
+             (patient_id, insurance_plan_id, policy_number, coverage_start_date, coverage_end_date) \
+             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::date[], $5::date[])"
+        )
+        .bind(&pt_ids[r.clone()])
+        .bind(&plan_ids[r.clone()])
+        .bind(&policy_nums[r.clone()])
+        .bind(&starts[r.clone()])
+        .bind(&ends[r.clone()])
+        .execute(&ctx.pool)
+        .await?;
+
+        ctx.counts.patient_insurance += chunk_end - chunk_start;
     }
 
-    tracing::info!(
-        "Generated {} patient insurance links",
-        ctx.counts.patient_insurance
-    );
+    tracing::info!("Generated {} patient insurance links", ctx.counts.patient_insurance);
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_relationships_available() {
-        let relationships = vec!["Spouse", "Parent", "Sibling", "Child", "Friend"];
-        assert_eq!(relationships.len(), 5);
-    }
 }

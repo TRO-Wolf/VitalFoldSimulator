@@ -21,6 +21,7 @@ use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use handlers::{health, auth, user, simulation};
+use handlers::simulation::PopulateRequest;
 use models::{RegisterRequest, LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
 use engine_state::SimulationCounts;
 
@@ -40,10 +41,12 @@ use engine_state::SimulationCounts;
         auth::register,
         auth::login,
         user::me,
-        simulation::start_simulation,
+        simulation::start_populate,
+        simulation::start_simulate,
         simulation::stop_simulation,
         simulation::get_status,
-        simulation::reset_data
+        simulation::reset_data,
+        simulation::reset_dynamo
     ),
     components(
         schemas(
@@ -53,14 +56,16 @@ use engine_state::SimulationCounts;
             UserProfile,
             MessageResponse,
             SimulationStatusResponse,
-            SimulationCounts
+            SimulationCounts,
+            PopulateRequest
         )
     ),
     tags(
-        (name = "Health", description = "Health check endpoints"),
+        (name = "Health",       description = "Health check endpoints"),
         (name = "Authentication", description = "User registration and login"),
-        (name = "User", description = "User profile management"),
-        (name = "Simulation", description = "Data generation simulation control")
+        (name = "User",         description = "User profile management"),
+        (name = "Population",   description = "Phase 1: seed Aurora DSQL with synthetic healthcare data"),
+        (name = "Simulation",   description = "Phase 2: write DynamoDB records for today's appointments, plus run control")
     ),
     modifiers(&SecurityAddon)
 )]
@@ -116,6 +121,19 @@ async fn main() -> std::io::Result<()> {
 
     tracing::info!("Database pool created successfully");
 
+    // Spawn a background task to refresh the DSQL IAM token every 12 minutes.
+    // DSQL tokens expire after ~15 minutes; without this, any simulation run
+    // started after the first token expires gets "access denied" on new connections.
+    db::spawn_token_refresh_task(pool.clone(), config.clone());
+    tracing::info!("DSQL token refresh task spawned (interval: 12 min)");
+
+    // Create DynamoDB client
+    let aws_cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_sdk_dynamodb::config::Region::new(config.dsql_region.clone()))
+        .load()
+        .await;
+    let dynamo_client = aws_sdk_dynamodb::Client::new(&aws_cfg);
+
     // Create global simulator state
     let simulator_state = web::Data::new(SimulatorState::new());
 
@@ -132,12 +150,26 @@ async fn main() -> std::io::Result<()> {
 
     // Start the HTTP server
     HttpServer::new(move || {
+        // Return a descriptive 400 on JSON parse failures instead of silently
+        // falling through to Option::None in handlers.
+        let json_cfg = web::JsonConfig::default()
+            .error_handler(|err, _req| {
+                let msg = format!("JSON parse error: {}", err);
+                actix_web::error::InternalError::from_response(
+                    err,
+                    actix_web::HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+                )
+                .into()
+            });
+
         App::new()
             // Logging middleware
             .wrap(TracingLogger::default())
             // App state
+            .app_data(json_cfg)
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(config.clone()))
+            .app_data(web::Data::new(dynamo_client.clone()))
             .app_data(simulator_state.clone())
             // Swagger UI
             .service(

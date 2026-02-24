@@ -1,7 +1,24 @@
 /// Application route configuration.
 ///
-/// Defines all API routes: public health/auth endpoints and protected simulation endpoints.
-/// Protected routes use JWT bearer token authentication via the jwt_validator middleware.
+/// # Route Structure
+///
+/// **Public routes** (no authentication required):
+/// - `GET  /health`                 — Health check
+/// - `POST /api/v1/auth/register`   — User registration
+/// - `POST /api/v1/auth/login`      — User login
+///
+/// **Protected routes** (require valid JWT bearer token):
+/// - `GET  /api/v1/me`              — Get current user profile
+///
+/// **Population routes** (JWT required):
+/// - `POST /populate`               — Seed all Aurora DSQL tables (Phase 1)
+///
+/// **Simulation routes** (JWT required):
+/// - `POST /simulate`               — Write DynamoDB records for today's appointments (Phase 2)
+/// - `POST /simulate/stop`          — Stop running job
+/// - `GET  /simulate/status`        — Poll run status and counts
+/// - `POST /simulate/reset`         — Delete all Aurora DSQL data
+/// - `POST /simulate/reset-dynamo`  — Delete all DynamoDB data
 
 use crate::handlers::{auth, health, simulation, user};
 use crate::middleware::auth::jwt_validator;
@@ -9,47 +26,42 @@ use actix_web::web;
 use actix_web_httpauth::middleware::HttpAuthentication;
 
 /// Configure all application routes.
-///
-/// # Route Structure
-/// - **Public routes** (no authentication required):
-///   - `GET /health` — Health check
-///   - `POST /api/v1/auth/register` — User registration
-///   - `POST /api/v1/auth/login` — User login
-///
-/// - **Protected routes** (require valid JWT bearer token):
-///   - `GET /api/v1/me` — Get current user profile
-///   - `POST /simulate` — Start simulation
-///   - `POST /simulate/stop` — Stop simulation
-///   - `GET /simulate/status` — Get simulation status
-///   - `POST /simulate/reset` — Reset all data
 pub fn configure(cfg: &mut web::ServiceConfig) {
-    // Public routes - no authentication required
+    // Public routes — no authentication required
     cfg.route("/health", web::get().to(health::health_check));
 
     cfg.service(
         web::scope("/api/v1/auth")
             .route("/register", web::post().to(auth::register))
-            .route("/login", web::post().to(auth::login))
+            .route("/login",    web::post().to(auth::login))
     );
 
-    // Protected routes - require valid JWT bearer token
     let auth_middleware = HttpAuthentication::bearer(jwt_validator);
 
     // Protected user route
-    cfg.route("/api/v1/me",
+    cfg.route(
+        "/api/v1/me",
         web::get()
             .to(user::me)
-            .wrap(auth_middleware.clone())
+            .wrap(auth_middleware.clone()),
     );
 
-    // Protected simulation routes
+    // Population route (Phase 1): seeds all Aurora DSQL tables
+    cfg.service(
+        web::scope("/populate")
+            .wrap(auth_middleware.clone())
+            .route("", web::post().to(simulation::start_populate))
+    );
+
+    // Simulation routes (Phase 2): DynamoDB day-of writes + control endpoints
     cfg.service(
         web::scope("/simulate")
             .wrap(auth_middleware)
-            .route("", web::post().to(simulation::start_simulation))
-            .route("/stop", web::post().to(simulation::stop_simulation))
-            .route("/status", web::get().to(simulation::get_status))
-            .route("/reset", web::post().to(simulation::reset_data))
+            .route("",              web::post().to(simulation::start_simulate))
+            .route("/stop",         web::post().to(simulation::stop_simulation))
+            .route("/status",       web::get().to(simulation::get_status))
+            .route("/reset",        web::post().to(simulation::reset_data))
+            .route("/reset-dynamo", web::post().to(simulation::reset_dynamo))
     );
 }
 
@@ -57,7 +69,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 mod tests {
     #[test]
     fn test_route_configuration() {
-        // This is a compile-time check that routes are correctly structured
-        // Full integration tests would require a running server
+        // Compile-time check that routes are correctly structured.
+        // Full integration tests would require a running server.
     }
 }
