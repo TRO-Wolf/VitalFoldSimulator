@@ -23,6 +23,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use handlers::{health, auth, user, simulation};
 use handlers::simulation::PopulateRequest;
 use models::{RegisterRequest, LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
+use handlers::auth::AdminLoginRequest;
 use engine_state::SimulationCounts;
 
 #[derive(OpenApi)]
@@ -40,6 +41,7 @@ use engine_state::SimulationCounts;
         health::health_check,
         auth::register,
         auth::login,
+        auth::admin_login,
         user::me,
         simulation::start_populate,
         simulation::start_simulate,
@@ -57,7 +59,8 @@ use engine_state::SimulationCounts;
             MessageResponse,
             SimulationStatusResponse,
             SimulationCounts,
-            PopulateRequest
+            PopulateRequest,
+            AdminLoginRequest
         )
     ),
     tags(

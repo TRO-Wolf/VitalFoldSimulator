@@ -9,7 +9,7 @@
 /// and patient_vitals records on the day of the visit.
 
 use crate::errors::AppError;
-use chrono::{Duration, Local, NaiveDateTime, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 use uuid::Uuid;
 
 use super::SimulationContext;
@@ -29,7 +29,7 @@ const APPOINTMENT_REASONS: &[&str] = &[
 pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::{thread_rng, Rng};
 
-    let today = Local::now().date_naive();
+    let today = Utc::now().date_naive();
     let total = ctx.patient_ids.len() * ctx.config.appointments_per_patient;
 
     // Build all appointment data synchronously — rng dropped before any await.
@@ -49,7 +49,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
             for _ in 0..ctx.config.appointments_per_patient {
                 let clinic_id   = ctx.clinic_ids[rng.gen_range(0..ctx.clinic_ids.len())];
                 let provider_id = ctx.provider_ids[rng.gen_range(0..ctx.provider_ids.len())];
-                let days_ahead  = rng.gen_range(1..90i64);
+                let days_ahead  = rng.gen_range(0..90i64);
                 let hour        = rng.gen_range(9..17u32);
                 let minute      = rng.gen_range(0..60u32);
                 let reason      = APPOINTMENT_REASONS[rng.gen_range(0..APPOINTMENT_REASONS.len())];
@@ -108,6 +108,7 @@ pub(super) async fn write_patient_visit(
     dynamo: &aws_sdk_dynamodb::Client,
     patient_id: Uuid,
     clinic_id: Uuid,
+    appointment_id: Uuid,
     provider_id: Uuid,
     appointment_dt: NaiveDateTime,
 ) {
@@ -130,15 +131,21 @@ pub(super) async fn write_patient_visit(
 
     // Epoch values for auditing and TTL.
     // creation_time: when this record is written (now).
-    // record_expiration_epoch: 30 days after the scheduled appointment date.
-    let now_epoch    = Utc::now().timestamp();
-    let expiry_epoch = (appointment_dt.and_utc() + Duration::days(30)).timestamp();
+    // record_expiration_epoch: 90 days from now.
+    let now          = Utc::now();
+    let now_epoch    = now.timestamp();
+    let expiry_epoch = (now + Duration::days(90)).timestamp();
+
+    // Sort key is "clinic_id#appointment_id" to ensure uniqueness —
+    // a patient can have multiple appointments at the same clinic.
+    let sort_key = format!("{}#{}", clinic_id, appointment_id);
 
     let result = dynamo
         .put_item()
         .table_name("patient_visit")
         .item("patient_id",              AttributeValue::S(patient_id.to_string()))
-        .item("clinic_id",               AttributeValue::S(clinic_id.to_string()))
+        .item("clinic_id",               AttributeValue::S(sort_key))
+        .item("appointment_id",          AttributeValue::S(appointment_id.to_string()))
         .item("provider_id",             AttributeValue::S(provider_id.to_string()))
         .item("checkin_time",            AttributeValue::S(checkin_time))
         .item("checkout_time",           AttributeValue::S(checkout_time))
@@ -151,7 +158,7 @@ pub(super) async fn write_patient_visit(
         .await;
 
     if let Err(e) = result {
-        tracing::warn!("DynamoDB patient_visit write failed: {:?}", e);
+        tracing::error!("DynamoDB patient_visit write failed: {:?}", e);
     }
 }
 
@@ -168,9 +175,8 @@ pub(super) async fn write_patient_vitals(
     dynamo: &aws_sdk_dynamodb::Client,
     patient_id: Uuid,
     clinic_id: Uuid,
-    provider_id: Uuid,
     visit_id: Uuid,
-    appointment_dt: NaiveDateTime,
+    provider_id: Uuid,
 ) {
     use aws_sdk_dynamodb::types::AttributeValue;
     use rand::{thread_rng, Rng};
@@ -190,14 +196,21 @@ pub(super) async fn write_patient_vitals(
     };
 
     // Epoch values for auditing and TTL.
-    let now_epoch    = Utc::now().timestamp();
-    let expiry_epoch = (appointment_dt.and_utc() + Duration::days(30)).timestamp();
+    // creation_time: when this record is written (now).
+    // record_expiration_epoch: 90 days from now.
+    let now          = Utc::now();
+    let now_epoch    = now.timestamp();
+    let expiry_epoch = (now + Duration::days(90)).timestamp();
+
+    // Sort key is "clinic_id#visit_id" to ensure uniqueness —
+    // a patient can have multiple appointments at the same clinic.
+    let sort_key = format!("{}#{}", clinic_id, visit_id);
 
     let result = dynamo
         .put_item()
         .table_name("patient_vitals")
         .item("patient_id",              AttributeValue::S(patient_id.to_string()))
-        .item("clinic_id",               AttributeValue::S(clinic_id.to_string()))
+        .item("clinic_id",               AttributeValue::S(sort_key))
         .item("provider_id",             AttributeValue::S(provider_id.to_string()))
         .item("visit_id",                AttributeValue::S(visit_id.to_string()))
         .item("heart_rate",              AttributeValue::N(heart_rate.to_string()))
@@ -213,6 +226,6 @@ pub(super) async fn write_patient_vitals(
         .await;
 
     if let Err(e) = result {
-        tracing::warn!("DynamoDB patient_vitals write failed: {:?}", e);
+        tracing::error!("DynamoDB patient_vitals write failed: {:?}", e);
     }
 }

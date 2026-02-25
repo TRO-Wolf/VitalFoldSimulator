@@ -5,7 +5,8 @@
 /// **Public routes** (no authentication required):
 /// - `GET  /health`                 — Health check
 /// - `POST /api/v1/auth/register`   — User registration
-/// - `POST /api/v1/auth/login`      — User login
+/// - `POST /api/v1/auth/login`       — User login
+/// - `POST /api/v1/auth/admin-login` — Admin login (env-var credentials, no DB required)
 ///
 /// **Protected routes** (require valid JWT bearer token):
 /// - `GET  /api/v1/me`              — Get current user profile
@@ -32,8 +33,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
     cfg.service(
         web::scope("/api/v1/auth")
-            .route("/register", web::post().to(auth::register))
-            .route("/login",    web::post().to(auth::login))
+            .route("/register",    web::post().to(auth::register))
+            .route("/login",       web::post().to(auth::login))
+            .route("/admin-login", web::post().to(auth::admin_login))
     );
 
     let auth_middleware = HttpAuthentication::bearer(jwt_validator);

@@ -22,6 +22,8 @@ pub struct Claims {
     pub iat: i64,
 }
 
+
+
 /// Generate a JWT token for a user.
 ///
 /// # Arguments
@@ -51,6 +53,8 @@ pub fn generate_token(user_id: Uuid, email: String, cfg: &Config) -> Result<Stri
         })
 }
 
+
+
 /// Validate and decode a JWT token.
 ///
 /// # Arguments
@@ -69,6 +73,8 @@ pub fn validate_token(token: &str, secret: &str) -> Result<Claims, AppError> {
             AppError::Unauthorized("Invalid or expired token".to_string())
         })
 }
+
+
 
 /// Actix Web extractor for JWT bearer token validation.
 ///
@@ -140,6 +146,8 @@ mod tests {
             db_pool_size: 10,
             jwt_secret: "test-secret-key-that-is-long-enough-for-validation".to_string(),
             jwt_expiry_hours: 24,
+            admin_username: None,
+            admin_password: None,
         };
 
         let user_id = Uuid::new_v4();
@@ -165,6 +173,8 @@ mod tests {
             db_pool_size: 10,
             jwt_secret: "test-secret-key-that-is-long-enough-for-validation".to_string(),
             jwt_expiry_hours: 24,
+            admin_username: None,
+            admin_password: None,
         };
 
         let invalid_token = "invalid.token.here";
@@ -189,6 +199,8 @@ mod tests {
             db_pool_size: 10,
             jwt_secret: "test-secret-key-that-is-long-enough-for-validation".to_string(),
             jwt_expiry_hours: 24,
+            admin_username: None,
+            admin_password: None,
         };
 
         let user_id = Uuid::new_v4();

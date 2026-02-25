@@ -6,6 +6,7 @@ use crate::models::{AuthResponse, LoginRequest, RegisterRequest, User, UserProfi
 use actix_web::{web, HttpResponse};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::Utc;
+use serde::Deserialize;
 use uuid::Uuid;
 
 /// Register a new user.
@@ -95,6 +96,8 @@ pub async fn register(
     Ok(HttpResponse::Created().json(response))
 }
 
+
+
 /// Login with email and password.
 ///
 /// # Request Body
@@ -168,6 +171,82 @@ pub async fn login(
     };
 
     tracing::info!("User logged in: {}", user_id);
+
+    Ok(HttpResponse::Ok().json(response))
+}
+
+/// Request body for admin login.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AdminLoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Login using admin credentials from environment variables.
+///
+/// # Request Body
+/// ```json
+/// {
+///   "username": "admin",
+///   "password": "secret"
+/// }
+/// ```
+///
+/// # Returns
+/// * `200 OK` with JWT token and admin profile on success
+/// * `401 Unauthorized` if credentials are wrong or admin login is not configured
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/admin-login",
+    tag = "Authentication",
+    responses(
+        (status = 200, description = "Admin logged in successfully", body = AuthResponse),
+        (status = 401, description = "Invalid admin credentials", body = String)
+    )
+)]
+pub async fn admin_login(
+    cfg: web::Data<Config>,
+    req: web::Json<AdminLoginRequest>,
+) -> Result<HttpResponse, AppError> {
+    let expected_username = cfg.admin_username.as_deref().ok_or_else(|| {
+        tracing::warn!("Admin login attempted but ADMIN_USERNAME is not configured");
+        AppError::Unauthorized("Invalid credentials".to_string())
+    })?;
+
+    let expected_password = cfg.admin_password.as_deref().ok_or_else(|| {
+        tracing::warn!("Admin login attempted but ADMIN_PASSWORD is not configured");
+        AppError::Unauthorized("Invalid credentials".to_string())
+    })?;
+
+    let username_matches = req.username == expected_username;
+    let password_matches = req.password == expected_password;
+
+    if !username_matches || !password_matches {
+        tracing::warn!("Failed admin login attempt for username: {}", req.username);
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+
+    // Use a fixed UUID for the admin identity so the sub claim is stable
+    // across restarts without requiring a database row.
+    let admin_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001")
+        .expect("hardcoded admin UUID is valid");
+    let admin_email = format!("{}@admin.internal", expected_username);
+
+    let token = generate_token(admin_id, admin_email.clone(), cfg.get_ref())?;
+
+    let now = Utc::now();
+    let user_profile = UserProfile {
+        id: admin_id,
+        email: admin_email,
+        created_at: now,
+    };
+
+    let response = AuthResponse {
+        token,
+        user: user_profile,
+    };
+
+    tracing::info!("Admin logged in: {}", admin_id);
 
     Ok(HttpResponse::Ok().json(response))
 }

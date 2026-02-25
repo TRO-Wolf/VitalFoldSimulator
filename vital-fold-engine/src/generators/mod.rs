@@ -202,6 +202,7 @@ pub async fn run_populate(
     Ok(())
 }
 
+
 /// Row returned when querying today's appointments for DynamoDB simulation.
 #[derive(sqlx::FromRow)]
 struct TodayAppointment {
@@ -265,6 +266,23 @@ pub async fn run_simulate(
 
     tracing::info!("Found {} appointments for today — writing to DynamoDB", total);
 
+    // Diagnostic: confirm the DynamoDB tables are reachable and log the region.
+    // This runs synchronously before any writes so errors are immediately visible.
+    for table_name in &["patient_visit", "patient_vitals"] {
+        match dynamo_client.describe_table().table_name(*table_name).send().await {
+            Ok(resp) => {
+                let status = resp.table()
+                    .and_then(|t| t.table_status())
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
+                tracing::info!("DynamoDB table '{}' is reachable, status={}", table_name, status);
+            }
+            Err(e) => {
+                tracing::error!("DynamoDB table '{}' NOT reachable: {:?}", table_name, e);
+            }
+        }
+    }
+
     // Bounded concurrency: cap simultaneous DynamoDB requests to stay well under
     // the 30,000 writes/sec per-table limit (see function doc for rate math).
     const DYNAMO_CONCURRENCY: usize = 128;
@@ -277,24 +295,24 @@ pub async fn run_simulate(
         let client     = dynamo_client.clone();
         let pt_id      = row.patient_id;
         let cl_id      = row.clinic_id;
+        let appt_id    = row.appointment_id;
         let pr_id      = row.provider_id;
         let appt_dt    = row.appointment_date;
         handles.push(tokio::spawn(async move {
-            appointment::write_patient_visit(&client, pt_id, cl_id, pr_id, appt_dt).await;
+            appointment::write_patient_visit(&client, pt_id, cl_id, appt_id, pr_id, appt_dt).await;
             drop(permit);
             true // signals this was a visit write
         }));
 
-        // patient_vitals write — appointment_dt needed for record_expiration_epoch
+        // patient_vitals write
         let permit     = sem.clone().acquire_owned().await.unwrap();
         let client     = dynamo_client.clone();
         let pt_id      = row.patient_id;
         let cl_id      = row.clinic_id;
-        let pr_id      = row.provider_id;
         let visit_id   = row.appointment_id;
-        let appt_dt    = row.appointment_date;
+        let pr_id      = row.provider_id;
         handles.push(tokio::spawn(async move {
-            appointment::write_patient_vitals(&client, pt_id, cl_id, pr_id, visit_id, appt_dt).await;
+            appointment::write_patient_vitals(&client, pt_id, cl_id, visit_id, pr_id).await;
             drop(permit);
             false // signals this was a vitals write
         }));

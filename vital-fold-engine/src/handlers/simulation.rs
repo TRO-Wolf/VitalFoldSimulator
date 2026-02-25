@@ -52,6 +52,8 @@ pub struct PopulateRequest {
     pub records_per_appointment: Option<usize>,
 }
 
+
+
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// Generates insurance companies (7 fixed), insurance plans, clinics (10 fixed SE US),
@@ -136,6 +138,9 @@ pub async fn start_populate(
     }))
 }
 
+
+
+
 /// Write DynamoDB records for all appointments scheduled for today.
 ///
 /// Queries Aurora DSQL for appointments where `appointment_date::date = CURRENT_DATE`,
@@ -193,6 +198,8 @@ pub async fn start_simulate(
     }))
 }
 
+
+
 /// Stop the currently running populate or simulate job.
 ///
 /// Sets the running flag to false. The background task will exit gracefully.
@@ -217,6 +224,8 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
         message: "Run stopped".to_string(),
     }))
 }
+
+
 
 /// Get the current run status and counts from the last completed job.
 ///

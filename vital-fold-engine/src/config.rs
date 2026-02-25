@@ -30,6 +30,12 @@ pub struct Config {
 
     /// JWT token expiry in hours (default: 24)
     pub jwt_expiry_hours: i64,
+
+    /// Admin username from ADMIN_USERNAME env var (optional)
+    pub admin_username: Option<String>,
+
+    /// Admin password from ADMIN_PASSWORD env var (optional)
+    pub admin_password: Option<String>,
 }
 
 impl Config {
@@ -76,6 +82,9 @@ impl Config {
             .parse::<i64>()
             .map_err(|e| anyhow!("JWT_EXPIRY_HOURS must be a valid i64: {}", e))?;
 
+        let admin_username = std::env::var("ADMIN_USERNAME").ok();
+        let admin_password = std::env::var("ADMIN_PASSWORD").ok();
+
         Ok(Config {
             host,
             port,
@@ -86,6 +95,8 @@ impl Config {
             db_pool_size,
             jwt_secret,
             jwt_expiry_hours,
+            admin_username,
+            admin_password,
         })
     }
 }
