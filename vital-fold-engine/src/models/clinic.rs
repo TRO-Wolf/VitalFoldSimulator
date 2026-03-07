@@ -21,7 +21,7 @@ pub struct Clinic {
 /// Provider schedule for a specific clinic.
 /// One row per provider-clinic-day combination.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct ClinicSche   dule {
+pub struct ClinicSchedule {
     pub schedule_id: Uuid,
     pub clinic_id: Uuid,
     pub provider_id: Uuid,

@@ -12,3 +12,10 @@ pub struct Appointment {
     pub appointment_date: NaiveDateTime,
     pub reason_for_visit: String,
 }
+
+
+struct Transaction {
+    id: u32,
+    reference_date: NaiveDateTime,
+    note: String
+}

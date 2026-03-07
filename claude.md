@@ -79,8 +79,7 @@ Generate using the `fake` crate — names must be clearly random/fictional. Dist
 | Language | Rust (stable, 2021 edition) |
 | Web Framework | Actix Web 4 |
 | Auth Middleware | actix-web-httpauth 0.8 (bearer tokens) |
-| Database Pool (DSQL) | deadpool-postgres 0.12 + tokio-postgres 0.7 |
-| Database ORM (simulation) | SQLx 0.8 (async, compile-time checked queries) |
+| Database Pool (DSQL) | sqlx 0.8.6 PgPool (runtime-tokio-rustls, PgConnectOptions, SSL) |
 | Database | Amazon Aurora DSQL (Postgres-compatible) + PostgreSQL 15+ |
 | Async Runtime | Tokio |
 | Data Faking | `fake` crate v4 |
@@ -113,7 +112,7 @@ vitalFoldEngine/
     ├── config.rs                 # Typed config from env vars
     ├── engine_state.rs           # AtomicBool SimulatorState (running flag + last_run + counts)
     ├── db/
-    │   └── mod.rs                # deadpool-postgres pool + DSQL IAM auth
+    │   └── mod.rs                # sqlx PgPool + DSQL IAM auth with token refresh
     ├── errors.rs                 # Unified AppError type
     ├── routes.rs                 # Route registration
     ├── middleware/
@@ -345,27 +344,27 @@ Fields: `host`, `port`, `dsql_endpoint`, `dsql_region`, `dsql_db_name`, `dsql_us
 
 `AppError` enum via `thiserror`:
 - Variants: `Database(String)`, `NotFound(String)`, `Unauthorized(String)`, `BadRequest(String)`, `Internal(String)`
-- `From<tokio_postgres::Error>` and `From<deadpool_postgres::PoolError>` both map to `AppError::Database`
+- `From<sqlx::Error>` maps to `AppError::Database`
 - Implements `actix_web::ResponseError`; 500 variants call `tracing::error!` before returning sanitised message
 - All responses serialise as `{ "error": "<message>" }`
 
 ### `src/db/mod.rs`
 
-`create_pool(cfg: &Config) -> Result<Pool, AppError>`:
+`create_pool(cfg: &Config) -> Result<DbPool, AppError>`:
 1. Load AWS config with `aws_config::defaults(BehaviorVersion::latest())` and the configured region
 2. Generate an IAM auth token via `AuthTokenGenerator` → `db_connect_admin_auth_token`
-3. Build `deadpool_postgres::Config` (host, dbname, user, password=token, port=5432, `RecyclingMethod::Fast`)
-4. Return `pool.create_pool(Some(Runtime::Tokio1), NoTls)`
+3. Build `PgConnectOptions` (host, port=5432, database, username, password=token, `PgSslMode::Require`)
+4. Return `PgPoolOptions::new().max_connections(cfg.db_pool_size).connect_with(opts).await`
 
-> **⚠ IAM tokens expire in ~15 min.** The initial build generates one token at startup. For long-running services, add a background Tokio task to rebuild the pool on a schedule.
+> **⚠ IAM tokens expire in ~15 min.** Call `db::spawn_token_refresh_task(pool.clone(), config.clone())` in `main.rs` after pool creation. It refreshes the token every 12 minutes via `pool.set_connect_options(new_opts)` without restarting the pool.
 
-Type alias: `pub type DbPool = deadpool_postgres::Pool;`
+Type alias: `pub type DbPool = sqlx::PgPool;`
 
 ### `src/middleware/auth.rs`
 
 - **`Claims`** (`Serialize`, `Deserialize`, `Clone`, `Debug`): `sub: String`, `email: String`, `exp: i64`, `iat: i64`
 - **`generate_token(user_id, email, cfg)`** — builds `Claims`, encodes with HS256 via `EncodingKey::from_secret`
-- **`validate_token(token, secret)`** — decodes with `Validation::default()`, maps errors to `AppError::Unauthorized`
+- **`validate_token(token, secret)`** — decodes with `Validation::new(Algorithm::HS256)`, maps errors to `AppError::Unauthorized`
 - **`jwt_validator`** — `actix-web-httpauth` extractor; inserts `Claims` into `req.extensions_mut()` on success
 
 ### `src/models/user.rs`
@@ -712,7 +711,7 @@ After each appointment is inserted into Aurora DSQL, write two corresponding Dyn
 | `DSQL_REGION` | No | AWS region for token signing | `us-east-1` |
 | `DSQL_DB_NAME` | No | Postgres database name | `postgres` |
 | `DSQL_USER` | No | Postgres user | `admin` |
-| `DB_POOL_SIZE` | No | deadpool max pool size | `10` |
+| `DB_POOL_SIZE` | No | sqlx max pool size | `10` |
 | `JWT_SECRET` | **Yes** | HMAC secret for HS256 signing | — |
 | `JWT_EXPIRY_HOURS` | No | Token lifetime in hours | `24` |
 | `RUST_LOG` | No | Log level | `info` |
@@ -786,8 +785,6 @@ edition = "2021"
 actix-web = "4"
 actix-web-httpauth = "0.8"
 tokio = { version = "1", features = ["full"] }
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4"] }
-deadpool-postgres = "0.12"
 sqlx = { version = "0.8.6", features = [
     "postgres", "runtime-tokio-rustls",
     "uuid", "chrono", "bigdecimal", "macros", "derive"
@@ -797,13 +794,10 @@ serde_json = "1"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 anyhow = "1"
-duckdb = { version = "1.4.4", features = ["bundled"] }
-polars = { version = "0.53", features = ["parquet", "csv", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 fake = { version = "4", features = ["derive"] }
 rand = "0.9"
-config = "0.15"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-actix-web = "0.7"
@@ -814,7 +808,6 @@ thiserror = "2"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dsql = "1"
 aws-sdk-dynamodb = "1"
-aws-sdk-rds = "1"
 aws-credential-types = "1"
 
 # OpenAPI / Swagger
@@ -853,7 +846,6 @@ use std::sync::Arc;
 
 // Database
 use sqlx::PgPool;
-use deadpool_postgres::Pool as DeadPool;
 
 // Fake data
 use fake::{Fake, Faker};

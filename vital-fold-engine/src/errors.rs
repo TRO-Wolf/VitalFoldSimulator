@@ -75,14 +75,6 @@ impl ResponseError for AppError {
     }
 }
 
-/// Convert tokio_postgres errors to AppError
-impl From<tokio_postgres::Error> for AppError {
-    fn from(err: tokio_postgres::Error) -> Self {
-        tracing::error!("tokio_postgres error: {}", err);
-        AppError::Database(err.to_string())
-    }
-}
-
 /// Convert sqlx errors to AppError
 impl From<sqlx::Error> for AppError {
     fn from(err: sqlx::Error) -> Self {

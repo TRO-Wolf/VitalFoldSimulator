@@ -9,7 +9,7 @@
 /// and patient_vitals records on the day of the visit.
 
 use crate::errors::AppError;
-use chrono::{Duration, NaiveDateTime, Utc};
+use chrono::{TimeDelta, NaiveDateTime, Utc};
 use uuid::Uuid;
 
 use super::SimulationContext;
@@ -55,7 +55,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
                 let reason      = APPOINTMENT_REASONS[rng.gen_range(0..APPOINTMENT_REASONS.len())];
 
                 let appt_dt = NaiveDateTime::new(
-                    today + Duration::days(days_ahead),
+                    today + TimeDelta::days(days_ahead),
                     chrono::NaiveTime::from_hms_opt(hour, minute, 0).unwrap(),
                 );
 
@@ -126,15 +126,15 @@ pub(super) async fn write_patient_visit(
     };
 
     let checkin_time  = appointment_dt.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let checkout_time = (appointment_dt + Duration::minutes(checkout_offset)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let provider_seen = (appointment_dt + Duration::minutes(provider_seen_offset)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let checkout_time = (appointment_dt + TimeDelta::minutes(checkout_offset)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let provider_seen = (appointment_dt + TimeDelta::minutes(provider_seen_offset)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     // Epoch values for auditing and TTL.
     // creation_time: when this record is written (now).
     // record_expiration_epoch: 90 days from now.
     let now          = Utc::now();
     let now_epoch    = now.timestamp();
-    let expiry_epoch = (now + Duration::days(90)).timestamp();
+    let expiry_epoch = (now + TimeDelta::days(90)).timestamp();
 
     // Sort key is "clinic_id#appointment_id" to ensure uniqueness —
     // a patient can have multiple appointments at the same clinic.
@@ -200,7 +200,7 @@ pub(super) async fn write_patient_vitals(
     // record_expiration_epoch: 90 days from now.
     let now          = Utc::now();
     let now_epoch    = now.timestamp();
-    let expiry_epoch = (now + Duration::days(90)).timestamp();
+    let expiry_epoch = (now + TimeDelta::days(90)).timestamp();
 
     // Sort key is "clinic_id#visit_id" to ensure uniqueness —
     // a patient can have multiple appointments at the same clinic.

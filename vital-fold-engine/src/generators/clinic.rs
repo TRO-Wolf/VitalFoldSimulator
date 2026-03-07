@@ -14,16 +14,16 @@ use rand::Rng;
 fn gen_phone(rng: &mut impl Rng) -> String {
     format!(
         "+1-{}{}{}-{}{}{}-{}{}{}{}",
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
     )
 }
 
@@ -53,8 +53,8 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
         let street_address: String = StreetName().fake();
         let zip_code: String = ZipCode().fake();
         let (phone, email) = {
-            use rand::thread_rng;
-            let mut rng = thread_rng();
+            use rand::rng;
+            let mut rng = rng();
             (gen_phone(&mut rng), SafeEmail().fake::<String>())
         };
 
@@ -90,22 +90,22 @@ pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<()
 
     for provider_id in &ctx.provider_ids {
         let (num_clinics, selected_clinics) = {
-            use rand::thread_rng;
-            let mut rng = thread_rng();
-            let n = rng.gen_range(1..=2);
+            use rand::rng;
+            let mut rng = rng();
+            let n = rng.random_range(1..=2);
             let clinics: Vec<_> = (0..n)
-                .map(|_| ctx.clinic_ids[rng.gen_range(0..ctx.clinic_ids.len())])
+                .map(|_| ctx.clinic_ids[rng.random_range(0..ctx.clinic_ids.len())])
                 .collect();
             (n, clinics)
         };
 
         for clinic_id in selected_clinics {
             let selected_days = {
-                use rand::thread_rng;
-                let mut rng = thread_rng();
-                let num_days = rng.gen_range(3..=5);
+                use rand::rng;
+                let mut rng = rng();
+                let num_days = rng.random_range(3..=5);
                 (0..num_days)
-                    .map(|_| WEEKDAYS[rng.gen_range(0..WEEKDAYS.len())])
+                    .map(|_| WEEKDAYS[rng.random_range(0..WEEKDAYS.len())])
                     .collect::<Vec<_>>()
             };
 

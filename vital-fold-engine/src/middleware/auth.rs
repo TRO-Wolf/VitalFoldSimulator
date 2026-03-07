@@ -3,7 +3,7 @@ use crate::errors::AppError;
 use actix_web::{dev::ServiceRequest, Error, HttpMessage};
 use actix_web_httpauth::extractors::bearer::BearerAuth;
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::str;
 use uuid::Uuid;
@@ -35,7 +35,7 @@ pub struct Claims {
 /// * `Result<String, AppError>` - The encoded JWT token
 pub fn generate_token(user_id: Uuid, email: String, cfg: &Config) -> Result<String, AppError> {
     let now = Utc::now();
-    let expiration = now + chrono::Duration::hours(cfg.jwt_expiry_hours);
+    let expiration = now + chrono::TimeDelta::hours(cfg.jwt_expiry_hours);
 
     let claims = Claims {
         sub: user_id.to_string(),
@@ -66,7 +66,7 @@ pub fn generate_token(user_id: Uuid, email: String, cfg: &Config) -> Result<Stri
 pub fn validate_token(token: &str, secret: &str) -> Result<Claims, AppError> {
     let decoding_key = DecodingKey::from_secret(secret.as_ref());
 
-    decode::<Claims>(token, &decoding_key, &Validation::default())
+    decode::<Claims>(token, &decoding_key, &Validation::new(Algorithm::HS256))
         .map(|data| data.claims)
         .map_err(|e| {
             tracing::warn!("JWT validation failed: {}", e);

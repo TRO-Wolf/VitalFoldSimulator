@@ -55,12 +55,12 @@ pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(),
         use rand::{thread_rng, Rng};
         let mut rng = thread_rng();
 
-        let mut pt_ids:       Vec<Uuid>              = Vec::with_capacity(total);
-        let mut provider_ids: Vec<Uuid>              = Vec::with_capacity(total);
-        let mut clinic_ids:   Vec<Uuid>              = Vec::with_capacity(total);
+        let mut pt_ids:       Vec<Uuid>                  = Vec::with_capacity(total);
+        let mut provider_ids: Vec<Uuid>                  = Vec::with_capacity(total);
+        let mut clinic_ids:   Vec<Uuid>                  = Vec::with_capacity(total);
         let mut record_dates: Vec<chrono::NaiveDateTime> = Vec::with_capacity(total);
-        let mut diagnoses:    Vec<String>            = Vec::with_capacity(total);
-        let mut treatments:   Vec<String>            = Vec::with_capacity(total);
+        let mut diagnoses:    Vec<String>                = Vec::with_capacity(total);
+        let mut treatments:   Vec<String>                = Vec::with_capacity(total);
 
         for &(_, patient_id, provider_id, clinic_id, appointment_date) in &appointments {
             for _ in 0..ctx.config.records_per_appointment {
@@ -71,7 +71,7 @@ pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(),
                 pt_ids.push(patient_id);
                 provider_ids.push(provider_id);
                 clinic_ids.push(clinic_id);
-                record_dates.push(appointment_date + chrono::Duration::minutes(offset));
+                record_dates.push(appointment_date + chrono::TimeDelta::minutes(offset));
                 diagnoses.push(diagnosis.to_string());
                 treatments.push(treatment.to_string());
             }

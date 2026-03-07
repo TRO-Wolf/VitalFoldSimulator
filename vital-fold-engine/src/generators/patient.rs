@@ -96,7 +96,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
         });
         batch.pt_last_names.push(LastName().fake());
         let days_back = (18 * 365) + rng.gen_range(0..(62 * 365)) as i64;
-        batch.pt_dobs.push(today - chrono::Duration::days(days_back));
+        batch.pt_dobs.push(today - chrono::TimeDelta::days(days_back));
         batch.pt_streets.push(StreetName().fake());
         batch.pt_cities.push(CityName().fake());
         batch.pt_states.push(StateAbbr().fake());
@@ -302,7 +302,7 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
             let plan_id = ctx.plan_ids[rng.gen_range(0..ctx.plan_ids.len())];
             let policy  = format!("POL-{:08X}", rng.gen::<u32>());
             let end     = if rng.gen_bool(0.2) {
-                Some(today - chrono::Duration::days(rng.gen_range(30..365)))
+                Some(today - chrono::TimeDelta::days(rng.gen_range(30..365)))
             } else {
                 None
             };
