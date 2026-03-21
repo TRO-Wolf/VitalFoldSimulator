@@ -22,10 +22,11 @@ pub mod appointment;
 pub mod medical_record;
 
 use crate::db::DbPool;
-use crate::engine_state::{SimulationCounts, SimulatorState};
+use crate::engine_state::{ClinicActivity, SimulationCounts, SimulatorState, TimelapseState};
 use crate::errors::AppError;
-use chrono::{NaiveDate, NaiveDateTime, Utc};
+use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 use aws_sdk_dynamodb::Client as DynamoClient;
 
@@ -344,6 +345,288 @@ pub async fn run_simulate(
     counts.dynamo_patient_vitals = vitals_written;
     state.set_last_run(Utc::now());
     state.set_counts(counts);
+
+    Ok(())
+}
+
+/// Row returned when querying clinic metadata for the timelapse.
+#[derive(sqlx::FromRow)]
+struct ClinicMeta {
+    clinic_id: Uuid,
+    city: String,
+    state: String,
+}
+
+/// Row returned when counting appointments per clinic for a given date+hour.
+#[derive(sqlx::FromRow)]
+struct ClinicCount {
+    clinic_id: Uuid,
+    cnt: i64,
+}
+
+/// Run a timelapse visualization across multiple days.
+///
+/// Queries Aurora for appointment counts per clinic per hour-window, updating
+/// `TimelapseState` so the frontend heatmap can poll and render activity.
+/// Does NOT write to DynamoDB — this is a read-only visualization.
+///
+/// Each simulated day is subdivided into 8 hour-windows (9am–5pm). The real-time
+/// interval between windows is `day_interval_secs / 8`.
+pub async fn run_timelapse(
+    pool: DbPool,
+    state: &SimulatorState,
+    total_days: usize,
+    day_interval_secs: u64,
+) -> Result<(), AppError> {
+    tracing::info!("Starting timelapse — {} days, {}s per day", total_days, day_interval_secs);
+
+    // 1. Fetch clinic metadata for display labels.
+    let clinics: Vec<ClinicMeta> = sqlx::query_as(
+        "SELECT clinic_id, city, state FROM vital_fold.clinic"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let clinic_map: HashMap<Uuid, (String, String)> = clinics
+        .iter()
+        .map(|c| (c.clinic_id, (c.city.clone(), c.state.clone())))
+        .collect();
+
+    if clinic_map.is_empty() {
+        tracing::warn!("Timelapse: no clinics found. Run POST /populate first.");
+        return Ok(());
+    }
+
+    // 2. Find the date range of existing appointments.
+    let range: Option<(NaiveDate, NaiveDate)> = sqlx::query_as(
+        "SELECT MIN(appointment_date::date), MAX(appointment_date::date) \
+         FROM vital_fold.appointment"
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    let (min_date, max_date) = match range {
+        Some((min, max)) => (min, max),
+        None => {
+            tracing::warn!("Timelapse: no appointments found. Run POST /populate first.");
+            return Ok(());
+        }
+    };
+
+    tracing::info!("Timelapse date range: {} to {}", min_date, max_date);
+
+    let window_sleep = tokio::time::Duration::from_secs(day_interval_secs / 8);
+    let mut current_date = min_date;
+    let mut day_number: usize = 0;
+    let actual_total = total_days.min(
+        (max_date - min_date).num_days() as usize + 1
+    );
+
+    // 3. Day loop.
+    while current_date <= max_date && day_number < total_days {
+        if !state.is_running() {
+            tracing::info!("Timelapse stopped by user at day {}", day_number);
+            break;
+        }
+
+        day_number += 1;
+
+        // 4. Hour-window loop (9..17 = 8 windows).
+        for hour in 9u32..17u32 {
+            if !state.is_running() {
+                break;
+            }
+
+            // Count appointments per clinic for this date+hour.
+            let counts: Vec<ClinicCount> = sqlx::query_as(
+                "SELECT clinic_id, COUNT(*) as cnt \
+                 FROM vital_fold.appointment \
+                 WHERE appointment_date::date = $1 \
+                   AND EXTRACT(HOUR FROM appointment_date) = $2 \
+                 GROUP BY clinic_id"
+            )
+            .bind(current_date)
+            .bind(hour as i32)
+            .fetch_all(&pool)
+            .await?;
+
+            let count_map: HashMap<Uuid, i64> = counts
+                .into_iter()
+                .map(|c| (c.clinic_id, c.cnt))
+                .collect();
+
+            // Build ClinicActivity for every clinic (0 if no appointments this window).
+            let clinic_activity: Vec<ClinicActivity> = clinics
+                .iter()
+                .map(|c| {
+                    let active = count_map.get(&c.clinic_id).copied().unwrap_or(0) as usize;
+                    ClinicActivity {
+                        clinic_id: c.clinic_id.to_string(),
+                        city: c.city.clone(),
+                        state: c.state.clone(),
+                        active_patients: active,
+                    }
+                })
+                .collect();
+
+            state.set_timelapse(Some(TimelapseState {
+                simulation_day: current_date.format("%Y-%m-%d").to_string(),
+                day_number,
+                total_days: actual_total,
+                sim_hour: hour,
+                clinics: clinic_activity,
+                is_complete: false,
+            }));
+
+            tokio::time::sleep(window_sleep).await;
+        }
+
+        current_date += TimeDelta::days(1);
+    }
+
+    // 5. Mark complete.
+    if let Some(mut final_state) = state.get_timelapse() {
+        final_state.is_complete = true;
+        state.set_timelapse(Some(final_state));
+    }
+
+    tracing::info!("Timelapse complete — processed {} days", day_number);
+
+    Ok(())
+}
+
+/// Animate hour-by-hour appointment counts for a single day.
+///
+/// Shared by `run_today_heatmap` and `run_heatmap_replay`. Queries Aurora only —
+/// no DynamoDB interaction. Returns early if the user stops the run.
+async fn animate_single_day(
+    pool: &DbPool,
+    state: &SimulatorState,
+    date: NaiveDate,
+    clinics: &[ClinicMeta],
+    window_interval_secs: u64,
+) -> Result<(), AppError> {
+    let window_sleep = tokio::time::Duration::from_secs(window_interval_secs);
+
+    for hour in 9u32..17u32 {
+        if !state.is_running() {
+            tracing::info!("Heatmap stopped by user at hour {}", hour);
+            break;
+        }
+
+        let counts: Vec<ClinicCount> = sqlx::query_as(
+            "SELECT clinic_id, COUNT(*) as cnt \
+             FROM vital_fold.appointment \
+             WHERE appointment_date::date = $1 \
+               AND EXTRACT(HOUR FROM appointment_date) = $2 \
+             GROUP BY clinic_id"
+        )
+        .bind(date)
+        .bind(hour as i32)
+        .fetch_all(pool)
+        .await?;
+
+        let count_map: HashMap<Uuid, i64> = counts
+            .into_iter()
+            .map(|c| (c.clinic_id, c.cnt))
+            .collect();
+
+        let clinic_activity: Vec<ClinicActivity> = clinics
+            .iter()
+            .map(|c| {
+                let active = count_map.get(&c.clinic_id).copied().unwrap_or(0) as usize;
+                ClinicActivity {
+                    clinic_id: c.clinic_id.to_string(),
+                    city: c.city.clone(),
+                    state: c.state.clone(),
+                    active_patients: active,
+                }
+            })
+            .collect();
+
+        state.set_timelapse(Some(TimelapseState {
+            simulation_day: date.format("%Y-%m-%d").to_string(),
+            day_number: 1,
+            total_days: 1,
+            sim_hour: hour,
+            clinics: clinic_activity,
+            is_complete: false,
+        }));
+
+        tokio::time::sleep(window_sleep).await;
+    }
+
+    if let Some(mut final_state) = state.get_timelapse() {
+        final_state.is_complete = true;
+        state.set_timelapse(Some(final_state));
+    }
+
+    Ok(())
+}
+
+/// Run a single-day heatmap for today's appointments.
+///
+/// If DynamoDB hasn't been populated yet (dynamo_patient_visits == 0), auto-triggers
+/// `run_simulate` first to write patient_visit + patient_vitals records, then animates
+/// hour-by-hour (9am–5pm) appointment counts per clinic.
+pub async fn run_today_heatmap(
+    pool: DbPool,
+    dynamo_client: DynamoClient,
+    state: &SimulatorState,
+    window_interval_secs: u64,
+) -> Result<(), AppError> {
+    if state.get_counts().dynamo_patient_visits == 0 {
+        tracing::info!("Heatmap: DynamoDB not populated — running simulate first");
+        run_simulate(pool.clone(), dynamo_client, state).await?;
+        if !state.is_running() {
+            return Ok(());
+        }
+    }
+
+    let clinics: Vec<ClinicMeta> = sqlx::query_as(
+        "SELECT clinic_id, city, state FROM vital_fold.clinic"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    if clinics.is_empty() {
+        tracing::warn!("Heatmap: no clinics found. Run POST /populate first.");
+        return Ok(());
+    }
+
+    let today = Utc::now().date_naive();
+    tracing::info!("Heatmap: animating {} with {}s per window", today, window_interval_secs);
+    animate_single_day(&pool, state, today, &clinics, window_interval_secs).await?;
+    tracing::info!("Heatmap complete for {}", today);
+
+    Ok(())
+}
+
+/// Replay heatmap animation using existing Aurora appointment data (read-only).
+///
+/// Unlike `run_today_heatmap`, this does **not** auto-populate DynamoDB.
+/// It queries only Aurora for appointment counts per clinic per hour,
+/// making it safe for non-admin users.
+pub async fn run_heatmap_replay(
+    pool: DbPool,
+    state: &SimulatorState,
+    window_interval_secs: u64,
+) -> Result<(), AppError> {
+    let clinics: Vec<ClinicMeta> = sqlx::query_as(
+        "SELECT clinic_id, city, state FROM vital_fold.clinic"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    if clinics.is_empty() {
+        tracing::warn!("Replay: no clinics found. Run POST /populate first.");
+        return Ok(());
+    }
+
+    let today = Utc::now().date_naive();
+    tracing::info!("Replay: animating {} with {}s per window", today, window_interval_secs);
+    animate_single_day(&pool, state, today, &clinics, window_interval_secs).await?;
+    tracing::info!("Replay complete for {}", today);
 
     Ok(())
 }

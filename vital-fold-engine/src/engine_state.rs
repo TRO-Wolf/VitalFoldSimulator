@@ -4,6 +4,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use utoipa::ToSchema;
 
+/// Per-clinic activity snapshot used by the timelapse heatmap.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClinicActivity {
+    pub clinic_id: String,
+    pub city: String,
+    pub state: String,
+    pub active_patients: usize,
+}
+
+/// State of a running (or completed) timelapse simulation.
+/// Updated once per hour-window by `run_timelapse` and read by `GET /simulate/heatmap`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TimelapseState {
+    /// Current simulated date, e.g. "2026-03-15"
+    pub simulation_day: String,
+    /// 1-based day counter
+    pub day_number: usize,
+    /// Total days in the timelapse
+    pub total_days: usize,
+    /// Current simulated hour (9..17)
+    pub sim_hour: u32,
+    /// Per-clinic appointment counts for the current hour-window
+    pub clinics: Vec<ClinicActivity>,
+    /// True when the timelapse has finished all days
+    pub is_complete: bool,
+}
+
 /// Row counts from the last completed populate or simulate run.
 /// Populated by POST /populate (Aurora DSQL fields) and POST /simulate (DynamoDB fields).
 ///
@@ -44,6 +71,9 @@ pub struct SimulatorState {
 
     /// Row counts from the last completed simulation run
     pub counts: Mutex<SimulationCounts>,
+
+    /// Timelapse heatmap state (None when no timelapse has been run)
+    pub timelapse: Mutex<Option<TimelapseState>>,
 }
 
 impl SimulatorState {
@@ -53,6 +83,7 @@ impl SimulatorState {
             running: AtomicBool::new(false),
             last_run: Mutex::new(None),
             counts: Mutex::new(SimulationCounts::default()),
+            timelapse: Mutex::new(None),
         }
     }
 
@@ -93,6 +124,16 @@ impl SimulatorState {
     /// Update the simulation counts.
     pub fn set_counts(&self, counts: SimulationCounts) {
         *self.counts.lock().unwrap() = counts;
+    }
+
+    /// Get a clone of the current timelapse state (if any).
+    pub fn get_timelapse(&self) -> Option<TimelapseState> {
+        self.timelapse.lock().unwrap().clone()
+    }
+
+    /// Update the timelapse state.
+    pub fn set_timelapse(&self, state: Option<TimelapseState>) {
+        *self.timelapse.lock().unwrap() = state;
     }
 }
 

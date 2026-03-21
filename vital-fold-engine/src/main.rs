@@ -21,10 +21,10 @@ use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use handlers::{health, auth, user, simulation};
-use handlers::simulation::PopulateRequest;
+use handlers::simulation::{PopulateRequest, TimelapseRequest, VisitorsResponse, ClinicVisitors, VisitorEntry};
 use models::{RegisterRequest, LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
 use handlers::auth::AdminLoginRequest;
-use engine_state::SimulationCounts;
+use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -48,7 +48,12 @@ use engine_state::SimulationCounts;
         simulation::stop_simulation,
         simulation::get_status,
         simulation::reset_data,
-        simulation::reset_dynamo
+        simulation::reset_dynamo,
+        simulation::start_timelapse,
+        simulation::get_heatmap,
+        simulation::get_visitors,
+        simulation::start_replay,
+        simulation::reset_replay
     ),
     components(
         schemas(
@@ -60,7 +65,13 @@ use engine_state::SimulationCounts;
             SimulationStatusResponse,
             SimulationCounts,
             PopulateRequest,
-            AdminLoginRequest
+            AdminLoginRequest,
+            TimelapseRequest,
+            TimelapseState,
+            ClinicActivity,
+            VisitorsResponse,
+            ClinicVisitors,
+            VisitorEntry
         )
     ),
     tags(
@@ -181,6 +192,8 @@ async fn main() -> std::io::Result<()> {
             )
             // Routes
             .configure(routes::configure)
+            // Static frontend files (must come after API routes)
+            .service(actix_files::Files::new("/", "./static").index_file("index.html"))
     })
     .bind((host.as_str(), port))?
     .run()

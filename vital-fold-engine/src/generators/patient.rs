@@ -11,16 +11,16 @@ const DSQL_BATCH_SIZE: usize = 2500;
 fn gen_phone(rng: &mut impl Rng) -> String {
     format!(
         "+1-{}{}{}-{}{}{}-{}{}{}{}",
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
     )
 }
 
@@ -52,11 +52,11 @@ fn build_patient_batch(n: usize) -> PatientBatch {
     use fake::faker::address::en::{StreetName, CityName, StateAbbr, ZipCode};
     use fake::faker::internet::en::SafeEmail;
     use chrono::Local;
-    use rand::thread_rng;
+    use rand::rng;
     use uuid::Uuid;
 
     let today = Local::now().naive_local().date();
-    let mut rng = thread_rng();
+    let mut rng = rng();
     let relationships = ["Spouse", "Parent", "Sibling", "Child", "Friend"];
 
     let mut batch = PatientBatch {
@@ -86,7 +86,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
             if name != "Adolf" { break name; }
         });
         batch.ec_last_names.push(LastName().fake());
-        batch.ec_relationships.push(relationships[rng.gen_range(0..relationships.len())].to_string());
+        batch.ec_relationships.push(relationships[rng.random_range(0..relationships.len())].to_string());
         batch.ec_phones.push(gen_phone(&mut rng));
         batch.ec_emails.push(SafeEmail().fake());
 
@@ -95,7 +95,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
             if name != "Adolf" { break name; }
         });
         batch.pt_last_names.push(LastName().fake());
-        let days_back = (18 * 365) + rng.gen_range(0..(62 * 365)) as i64;
+        let days_back = (18 * 365) + rng.random_range(0..(62 * 365)) as i64;
         batch.pt_dobs.push(today - chrono::TimeDelta::days(days_back));
         batch.pt_streets.push(StreetName().fake());
         batch.pt_cities.push(CityName().fake());
@@ -115,20 +115,20 @@ fn build_patient_batch(n: usize) -> PatientBatch {
 /// per-transaction limit. Emergency contact UUIDs are pre-generated client-side
 /// so patients can reference them without a per-row UPDATE.
 pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let n = ctx.config.patients;
+    let n: usize = ctx.config.patients;
 
     // Generate all row data synchronously — rng is dropped before any await.
-    let batch = build_patient_batch(n);
+    let batch: PatientBatch = build_patient_batch(n);
 
     // Process in chunks to respect the DSQL 3000-row per-transaction limit.
     for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
-        let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(n);
+        let chunk_end: usize = (chunk_start + DSQL_BATCH_SIZE).min(n);
         let chunk_size = chunk_end - chunk_start;
         let r = chunk_start..chunk_end;
 
         // Bulk INSERT emergency contacts for this chunk — one round-trip.
-        let ec_ids_chunk    = &batch.ec_ids[r.clone()];
-        let ec_placeholder  = ec_ids_chunk; // temp patient_id, fixed in UPDATE below
+        let ec_ids_chunk: &[uuid::Uuid] = &batch.ec_ids[r.clone()];
+        let ec_placeholder: &[uuid::Uuid]  = ec_ids_chunk; // temp patient_id, fixed in UPDATE below
 
         sqlx::query(
             "INSERT INTO vital_fold.emergency_contact \
@@ -148,7 +148,10 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
         ctx.counts.emergency_contacts += chunk_size;
 
         // Bulk INSERT patients for this chunk — one round-trip.
-        let ec_id_strs: Vec<String> = ec_ids_chunk.iter().map(|id| id.to_string()).collect();
+        let ec_id_strs: Vec<String> = ec_ids_chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
 
         let patient_rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "INSERT INTO vital_fold.patient \

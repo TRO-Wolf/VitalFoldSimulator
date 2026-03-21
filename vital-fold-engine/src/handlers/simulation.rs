@@ -19,12 +19,12 @@
 use crate::db::DbPool;
 use crate::engine_state::SimulatorState;
 use crate::errors::AppError;
-use crate::generators::{run_populate, run_simulate, SimulationConfig};
+use crate::generators::{run_populate, run_simulate, run_today_heatmap, run_heatmap_replay, SimulationConfig};
 use crate::models::{MessageResponse, SimulationStatusResponse};
 use actix_web::{web, HttpResponse};
 use aws_sdk_dynamodb::Client as DynamoClient;
 use aws_sdk_dynamodb::types::{DeleteRequest, WriteRequest};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Request body for starting a populate run.
@@ -268,6 +268,295 @@ pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse
 
 
 
+/// Request body for starting a heatmap visualization.
+/// All fields optional — omit to use defaults.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct TimelapseRequest {
+    /// Seconds between hour-window updates (default: 5)
+    #[schema(example = 5)]
+    pub window_interval_secs: Option<u64>,
+}
+
+/// Start a single-day heatmap visualization for today's appointments.
+///
+/// Animates hour-by-hour (9am–5pm) appointment counts per clinic on the
+/// current date. If DynamoDB hasn't been populated yet, auto-triggers
+/// `run_simulate` first to write patient_visit + patient_vitals records.
+///
+/// Poll `GET /simulate/heatmap` at 1–2 second intervals to drive the
+/// frontend heatmap canvas.
+///
+/// Default: `window_interval_secs=5` (~40 seconds for the full day sweep).
+#[utoipa::path(
+    post,
+    path = "/simulate/timelapse",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body(
+        content = TimelapseRequest,
+        description = "Optional heatmap parameters.",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 202, description = "Heatmap started", body = MessageResponse),
+        (status = 400, description = "A run is already in progress", body = String),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
+pub async fn start_timelapse(
+    pool: web::Data<DbPool>,
+    dynamo: web::Data<DynamoClient>,
+    state: web::Data<SimulatorState>,
+    body: Option<web::Json<TimelapseRequest>>,
+) -> Result<HttpResponse, AppError> {
+    if !state.try_start() {
+        tracing::warn!("Heatmap rejected: a run is already in progress");
+        return Err(AppError::BadRequest(
+            "A run is already in progress".to_string(),
+        ));
+    }
+
+    let interval = body.as_ref().and_then(|b| b.window_interval_secs).unwrap_or(5);
+
+    // Clear any previous timelapse state
+    state.set_timelapse(None);
+
+    let pool_clone   = pool.get_ref().clone();
+    let dynamo_clone = dynamo.get_ref().clone();
+    let state_clone  = state.clone();
+
+    tokio::spawn(async move {
+        match run_today_heatmap(pool_clone, dynamo_clone, &state_clone, interval).await {
+            Ok(_)  => tracing::info!("Heatmap completed successfully"),
+            Err(e) => tracing::error!("Heatmap failed: {}", e),
+        }
+        state_clone.stop();
+    });
+
+    tracing::info!("Heatmap started — {}s per window", interval);
+
+    Ok(HttpResponse::Accepted().json(MessageResponse {
+        message: "Heatmap started".to_string(),
+    }))
+}
+
+
+
+/// Get the current timelapse heatmap state.
+///
+/// Returns per-clinic appointment activity for the current simulated day and hour.
+/// Poll this at 1–2 second intervals while a timelapse is running to drive the
+/// frontend heatmap visualization.
+///
+/// Returns `{ "active": false }` if no timelapse has been started.
+#[utoipa::path(
+    get,
+    path = "/simulate/heatmap",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Heatmap data retrieved"),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
+pub async fn get_heatmap(state: web::Data<SimulatorState>) -> Result<HttpResponse, AppError> {
+    match state.get_timelapse() {
+        Some(ts) => Ok(HttpResponse::Ok().json(ts)),
+        None => Ok(HttpResponse::Ok().json(serde_json::json!({ "active": false }))),
+    }
+}
+
+/// Start a read-only heatmap replay using existing Aurora appointment data.
+///
+/// Unlike `start_timelapse`, this does **not** write to or read from DynamoDB.
+/// It replays the hour-by-hour animation for today's appointments, making it
+/// safe for non-admin users.
+#[utoipa::path(
+    post,
+    path = "/simulate/replay",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    request_body(
+        content = TimelapseRequest,
+        description = "Optional replay parameters.",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 202, description = "Heatmap replay started", body = MessageResponse),
+        (status = 400, description = "A run is already in progress", body = String),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
+pub async fn start_replay(
+    pool: web::Data<DbPool>,
+    state: web::Data<SimulatorState>,
+    body: Option<web::Json<TimelapseRequest>>,
+) -> Result<HttpResponse, AppError> {
+    if !state.try_start() {
+        tracing::warn!("Replay rejected: a run is already in progress");
+        return Err(AppError::BadRequest(
+            "A run is already in progress".to_string(),
+        ));
+    }
+
+    let interval = body.as_ref().and_then(|b| b.window_interval_secs).unwrap_or(5);
+
+    state.set_timelapse(None);
+
+    let pool_clone  = pool.get_ref().clone();
+    let state_clone = state.clone();
+
+    tokio::spawn(async move {
+        match run_heatmap_replay(pool_clone, &state_clone, interval).await {
+            Ok(_)  => tracing::info!("Replay completed successfully"),
+            Err(e) => tracing::error!("Replay failed: {}", e),
+        }
+        state_clone.stop();
+    });
+
+    tracing::info!("Replay started — {}s per window", interval);
+
+    Ok(HttpResponse::Accepted().json(MessageResponse {
+        message: "Heatmap replay started".to_string(),
+    }))
+}
+
+/// Clear the heatmap replay state without deleting any data.
+#[utoipa::path(
+    post,
+    path = "/simulate/replay-reset",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Replay state cleared", body = MessageResponse),
+        (status = 401, description = "Unauthorized", body = String)
+    )
+)]
+pub async fn reset_replay(
+    state: web::Data<SimulatorState>,
+) -> Result<HttpResponse, AppError> {
+    state.set_timelapse(None);
+    tracing::info!("Replay state cleared");
+    Ok(HttpResponse::Ok().json(MessageResponse {
+        message: "Replay state cleared".to_string(),
+    }))
+}
+
+/// A single visitor row: patient name + clinic info.
+#[derive(sqlx::FromRow)]
+struct VisitorRow {
+    first_name: String,
+    last_name: String,
+    clinic_name: String,
+    city: String,
+    state: String,
+    hour: i32,
+}
+
+/// A visitor entry within a clinic group.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct VisitorEntry {
+    pub first_name: String,
+    pub last_name: String,
+    pub hour: u32,
+}
+
+/// Visitors grouped by clinic.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ClinicVisitors {
+    pub clinic_name: String,
+    pub city: String,
+    pub state: String,
+    pub visitors: Vec<VisitorEntry>,
+}
+
+/// Response for the visitors endpoint.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct VisitorsResponse {
+    pub date: String,
+    pub clinics: Vec<ClinicVisitors>,
+}
+
+/// Get today's visitors (patient names) grouped by clinic.
+///
+/// Joins `appointment`, `patient`, and `clinic` tables to return the first/last name
+/// of every patient with an appointment today, grouped by clinic with city/state info.
+#[utoipa::path(
+    get,
+    path = "/simulate/visitors",
+    tag = "Simulation",
+    security(
+        ("bearer_auth" = [])
+    ),
+    responses(
+        (status = 200, description = "Visitor list retrieved", body = VisitorsResponse),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "Internal server error", body = String)
+    )
+)]
+pub async fn get_visitors(
+    pool: web::Data<DbPool>,
+) -> Result<HttpResponse, AppError> {
+    let rows: Vec<VisitorRow> = sqlx::query_as(
+        "SELECT p.first_name, p.last_name, c.clinic_name, c.city, c.state, \
+                EXTRACT(HOUR FROM a.appointment_date)::INTEGER as hour \
+         FROM vital_fold.appointment a \
+         JOIN vital_fold.patient p ON p.patient_id = a.patient_id \
+         JOIN vital_fold.clinic c ON c.clinic_id = a.clinic_id \
+         WHERE a.appointment_date::date = CURRENT_DATE \
+         ORDER BY c.clinic_name, a.appointment_date"
+    )
+    .fetch_all(pool.get_ref())
+    .await?;
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // Group by clinic_name
+    let mut clinic_map: Vec<(String, String, String, Vec<VisitorEntry>)> = Vec::new();
+    for row in rows {
+        let entry = VisitorEntry {
+            first_name: row.first_name,
+            last_name: row.last_name,
+            hour: row.hour as u32,
+        };
+        if let Some(last) = clinic_map.last_mut() {
+            if last.0 == row.clinic_name {
+                last.3.push(entry);
+                continue;
+            }
+        }
+        clinic_map.push((row.clinic_name, row.city, row.state, vec![entry]));
+    }
+
+    let clinics = clinic_map
+        .into_iter()
+        .map(|(clinic_name, city, state, visitors)| ClinicVisitors {
+            clinic_name,
+            city,
+            state,
+            visitors,
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok().json(VisitorsResponse {
+        date: today,
+        clinics,
+    }))
+}
+
+
+
 /// Reset all data by deleting all rows from vital_fold schema tables.
 ///
 /// WARNING: This is destructive. All generated Aurora DSQL data will be deleted.
@@ -339,6 +628,21 @@ pub async fn reset_data(
         tracing::debug!("Deleted {} rows from {}", total_deleted, table);
     }
 
+    // Zero out Aurora counts so the dashboard reflects the cleared state.
+    let mut counts = state.get_counts();
+    counts.insurance_companies = 0;
+    counts.insurance_plans = 0;
+    counts.clinics = 0;
+    counts.providers = 0;
+    counts.patients = 0;
+    counts.emergency_contacts = 0;
+    counts.patient_demographics = 0;
+    counts.patient_insurance = 0;
+    counts.clinic_schedules = 0;
+    counts.appointments = 0;
+    counts.medical_records = 0;
+    state.set_counts(counts);
+
     tracing::info!("All data reset successfully");
 
     Ok(HttpResponse::Ok().json(MessageResponse {
@@ -400,6 +704,14 @@ pub async fn reset_dynamo(
         let deleted = delete_dynamo_table(dynamo.get_ref(), table, pk_name, sk_name).await?;
         tracing::info!("Deleted {} items from DynamoDB table '{}'", deleted, table);
     }
+
+    // Zero out the in-memory DynamoDB counts so that run_today_heatmap's
+    // auto-populate check (dynamo_patient_visits == 0) correctly re-triggers
+    // run_simulate on the next heatmap run.
+    let mut counts = state.get_counts();
+    counts.dynamo_patient_visits = 0;
+    counts.dynamo_patient_vitals = 0;
+    state.set_counts(counts);
 
     tracing::info!("DynamoDB reset complete");
 
