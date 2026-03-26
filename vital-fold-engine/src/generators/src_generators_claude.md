@@ -9,7 +9,7 @@
 The generators module is the core synthetic data pipeline for VitalFold Engine. It produces realistic healthcare data and loads it into two storage systems:
 
 - **Aurora DSQL** (Postgres-compatible) — all relational tables in the `vital_fold` schema
-- **DynamoDB** — `patient_visit` and `patient_vitals` tables
+- **DynamoDB** — `patient_visit` table (vitals embedded as attributes)
 
 ### Two-Phase Lifecycle
 
@@ -17,7 +17,7 @@ The generators module is the core synthetic data pipeline for VitalFold Engine. 
 Seeds all Aurora DSQL tables. Appointments are dated 0–89 days in the future. **No DynamoDB writes.**
 
 **Phase 2 — `POST /simulate` → `run_simulate()`**
-Called on any given calendar day. Queries Aurora for `appointment_date::date = CURRENT_DATE`, then writes two DynamoDB records per appointment (patient_visit + patient_vitals). Run once per day to simulate real-time visit data capture.
+Called on any given calendar day. Queries Aurora for today's patient_visits (with embedded vitals), then writes one DynamoDB record per visit (patient_visit with vital attributes). Run once per day to simulate real-time visit data capture.
 
 ### FK-Safe Execution Order (run_populate)
 
@@ -34,6 +34,7 @@ Called on any given calendar day. Queries Aurora for `appointment_date::date = C
 9. generate_clinic_schedules      → (needs provider_ids, clinic_ids)
 10. generate_appointments         → (needs patient_ids, provider_ids, clinic_ids)
 11. generate_medical_records      → (queries appointments from DB)
+12. generate_patient_visits       → (queries appointments from DB, generates vitals inline)
 ```
 
 ---
@@ -272,19 +273,15 @@ patient_insurance: patient_id, insurance_plan_id, policy_number (TEXT "POL-XXXXX
 pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), AppError>
 ```
 
-**Internal functions (simulate phase, called by `mod.rs::run_simulate`):**
+**Internal function (simulate phase, called by `mod.rs::run_simulate`):**
 ```rust
 pub(super) async fn write_patient_visit(
     dynamo: &aws_sdk_dynamodb::Client,
-    patient_id: Uuid, clinic_id: Uuid, appointment_id: Uuid,
-    provider_id: Uuid, appointment_dt: NaiveDateTime,
-)
-
-pub(super) async fn write_patient_vitals(
-    dynamo: &aws_sdk_dynamodb::Client,
-    patient_id: Uuid, clinic_id: Uuid, visit_id: Uuid, provider_id: Uuid,
+    visit: &crate::models::PatientVisit,
 )
 ```
+
+Reads all field values from the Aurora `PatientVisit` row (including vitals) — no random generation at write time.
 
 **Reads from ctx:** `ctx.patient_ids`, `ctx.provider_ids`, `ctx.clinic_ids`, `ctx.config.appointments_per_patient`
 
@@ -313,41 +310,67 @@ appointment: patient_id, provider_id, clinic_id, appointment_date (TIMESTAMP), r
 
 #### DynamoDB Writes (simulate phase only)
 
-**`patient_visit` table:**
-
-| Attribute | Type | Notes |
-|---|---|---|
-| `patient_id` | S (UUID string) | Partition key |
-| `clinic_id` | S | Sort key: `"clinic_id#appointment_id"` |
-| `appointment_id` | S (UUID string) | |
-| `provider_id` | S (UUID string) | |
-| `checkin_time` | S | ISO 8601 = appointment_date |
-| `checkout_time` | S | ISO 8601 = checkin + 30–120 min |
-| `provider_seen_time` | S | ISO 8601 = checkin + 5–30 min |
-| `ekg_usage` | Bool | 20% true |
-| `estimated_copay` | N (string) | $20–$149 |
-| `creation_time` | N (epoch) | Unix timestamp of write |
-| `record_expiration_epoch` | N (epoch) | creation_time + 90 days (DynamoDB TTL) |
-
-**`patient_vitals` table:**
+**`patient_visit` table** (single table, vitals embedded):
 
 | Attribute | Type | Notes |
 |---|---|---|
 | `patient_id` | S (UUID string) | Partition key |
 | `clinic_id` | S | Sort key: `"clinic_id#visit_id"` |
 | `provider_id` | S (UUID string) | |
-| `visit_id` | S (UUID string) | = appointment_id |
-| `heart_rate` | N (string) | 50–119 bpm |
-| `oxygen` | N (string) | 92–100 % SpO2 |
-| `temperature` | N (string, 1dp) | 97.0–99.5 °F |
-| `blood_pressure` | S | `"SYS/DIA"` format (100–159 / 60–99) |
-| `height` | N (string, 1dp) | 60.0–77.9 inches |
-| `weight` | N (string, 1dp) | 120.0–219.9 lbs |
-| `pulses` | N (string) | 50–119 bpm |
+| `checkin_time` | S | ISO 8601 |
+| `checkout_time` | S | ISO 8601 = checkin + 30–120 min |
+| `provider_seen_time` | S | ISO 8601 = checkin + 5–30 min |
+| `ekg_usage` | Bool | 20% true |
+| `estimated_copay` | N (string) | $20–$149 |
 | `creation_time` | N (epoch) | Unix timestamp of write |
 | `record_expiration_epoch` | N (epoch) | creation_time + 90 days (DynamoDB TTL) |
+| `height` | N (string) | 60.0–77.9 inches |
+| `weight` | N (string) | 120.0–219.9 lbs |
+| `blood_pressure` | S | `"SYS/DIA"` format (100–159 / 60–99) |
+| `heart_rate` | N (string) | 50–119 bpm |
+| `temperature` | N (string) | 97.0–99.5 °F |
+| `oxygen_saturation` | N (string) | 95.0–99.9 % SpO2 |
+| `pulse_rate` | N (string) | 50–119 bpm |
 
 **DynamoDB error handling:** fire-and-forget — errors logged with `tracing::error!`, simulation continues.
+
+---
+
+### `visit.rs`
+
+**Public functions:**
+```rust
+pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), AppError>
+pub async fn generate_visits_for_appointments(
+    pool: &DbPool,
+    appointments: &[(Uuid, Uuid, Uuid, Uuid, NaiveDateTime)],
+) -> Result<usize, AppError>
+```
+
+**Reads from ctx:** `ctx.pool` (queries appointments from Aurora)
+
+**Writes to ctx:** `ctx.counts.patient_visits`
+
+**Tables (Aurora DSQL):**
+- `vital_fold.patient_visits` — bulk INSERT via UNNEST (17 columns)
+
+**patient_visits — SQL columns:**
+```
+patient_id, clinic_id, provider_id, checkin_time, checkout_time,
+provider_seen_time, ekg_usage, estimated_copay, creation_time, record_expiration_epoch,
+height, weight, blood_pressure, heart_rate, temperature, oxygen_saturation, pulse_rate
+```
+
+**Vitals generation (inline on each visit):**
+- `height`: 60.0–77.9 inches
+- `weight`: 120.0–219.9 lbs
+- `blood_pressure`: "SYS/DIA" (100–159 / 60–99)
+- `heart_rate`: 50–119 bpm
+- `temperature`: 97.0–99.5 °F
+- `oxygen_saturation`: 95.0–99.9 %SpO2
+- `pulse_rate`: 50–119 bpm
+
+**Insert strategy:** chunked UNNEST with `DSQL_BATCH_SIZE = 2500`. RNG in synchronous block, dropped before `.await`.
 
 ---
 

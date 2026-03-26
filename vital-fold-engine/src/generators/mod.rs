@@ -6,13 +6,13 @@
 /// Seeds all Aurora DSQL tables with synthetic healthcare data:
 /// insurance companies, plans, clinics, providers, patients, emergency contacts,
 /// demographics, insurance links, clinic schedules, appointments, and medical records.
-/// Appointments are generated 1–89 days in the future. No DynamoDB writes.
+/// Appointments are distributed across a configurable date range. No DynamoDB writes.
 ///
 /// ## Phase 2 — POST /simulate → run_simulate()
-/// Called on the day of an appointment. Queries Aurora for all appointments where
-/// appointment_date = today, then writes patient_visit and patient_vitals records
-/// to DynamoDB for each one. Models the real-world scenario where vitals and
-/// check-in data are recorded on the day of the visit.
+/// Called on the day of an appointment. JOINs patient_visit + patient_vitals from
+/// Aurora where checkin_time matches today, then writes to both DynamoDB tables
+/// (patient_visit and patient_vitals) for each. Models the real-world scenario
+/// where vitals and check-in data are recorded on the day of the visit.
 
 pub mod insurance;
 pub mod clinic;
@@ -20,9 +20,10 @@ pub mod provider;
 pub mod patient;
 pub mod appointment;
 pub mod medical_record;
+pub mod visit;
 
 use crate::db::DbPool;
-use crate::engine_state::{ClinicActivity, SimulationCounts, SimulatorState, TimelapseState};
+use crate::engine_state::{ClinicActivity, PopulateProgress, SimulationCounts, SimulatorState, TimelapseState};
 use crate::errors::AppError;
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
@@ -43,23 +44,53 @@ pub struct SimulationConfig {
     /// Number of patients to generate
     pub patients: usize,
 
-    /// Number of appointments per patient (all dated 1–89 days in the future)
+    /// Number of appointments per patient
     pub appointments_per_patient: usize,
 
     /// Number of medical records per appointment
     pub records_per_appointment: usize,
+
+    /// Start date for appointment generation (inclusive)
+    pub start_date: NaiveDate,
+
+    /// End date for appointment generation (inclusive)
+    pub end_date: NaiveDate,
 }
 
 impl Default for SimulationConfig {
     fn default() -> Self {
+        let tomorrow = Utc::now().date_naive() + TimeDelta::days(1);
         SimulationConfig {
             plans_per_company: 3,
             providers: 50,
             patients: 50000,
             appointments_per_patient: 2,
             records_per_appointment: 1,
+            start_date: tomorrow,
+            end_date: tomorrow + TimeDelta::days(89),
         }
     }
+}
+
+/// Sum all Aurora row counts for populate progress tracking.
+fn count_aurora_rows(c: &SimulationCounts) -> u64 {
+    (c.insurance_companies + c.insurance_plans + c.clinics + c.providers
+        + c.patients + c.emergency_contacts + c.patient_demographics
+        + c.patient_insurance + c.clinic_schedules + c.appointments
+        + c.medical_records + c.patient_visits + c.patient_vitals) as u64
+}
+
+/// Sum Aurora row counts for static (reference) data only.
+fn count_static_rows(c: &SimulationCounts) -> u64 {
+    (c.insurance_companies + c.insurance_plans + c.clinics + c.providers
+        + c.patients + c.emergency_contacts + c.patient_demographics
+        + c.patient_insurance) as u64
+}
+
+/// Sum Aurora row counts for dynamic (date-dependent) data only.
+fn count_dynamic_rows(c: &SimulationCounts) -> u64 {
+    (c.clinic_schedules + c.appointments + c.medical_records
+        + c.patient_visits + c.patient_vitals) as u64
 }
 
 /// Context passed through all generators containing shared data and pool references.
@@ -114,11 +145,89 @@ impl SimulationContext {
     }
 }
 
+/// Total number of steps in the populate pipeline.
+const POPULATE_TOTAL_STEPS: usize = 13;
+
+/// Populate step display names (index matches step-1).
+const POPULATE_STEP_NAMES: [&str; POPULATE_TOTAL_STEPS] = [
+    "Insurance Companies",
+    "Insurance Plans",
+    "Clinics",
+    "Providers",
+    "Patients",
+    "Emergency Contacts",
+    "Patient Demographics",
+    "Patient Insurance",
+    "Clinic Schedules",
+    "Appointments",
+    "Medical Records",
+    "Patient Visits",
+    "Patient Vitals",
+];
+
+/// Total number of steps in the static populate pipeline (steps 1-8).
+const STATIC_TOTAL_STEPS: usize = 8;
+
+/// Static populate step display names.
+const STATIC_STEP_NAMES: [&str; STATIC_TOTAL_STEPS] = [
+    "Insurance Companies",
+    "Insurance Plans",
+    "Clinics",
+    "Providers",
+    "Patients",
+    "Emergency Contacts",
+    "Patient Demographics",
+    "Patient Insurance",
+];
+
+/// Total number of steps in the dynamic populate pipeline (steps 9-13).
+const DYNAMIC_TOTAL_STEPS: usize = 5;
+
+/// Dynamic populate step display names.
+const DYNAMIC_STEP_NAMES: [&str; DYNAMIC_TOTAL_STEPS] = [
+    "Clinic Schedules",
+    "Appointments",
+    "Medical Records",
+    "Patient Visits",
+    "Patient Vitals",
+];
+
+/// Publish populate progress to the global state.
+fn set_populate_step(state: &SimulatorState, step: usize, counts: &SimulationCounts) {
+    state.set_populate_progress(Some(PopulateProgress {
+        current_step: POPULATE_STEP_NAMES[step].to_string(),
+        steps_done: step,
+        total_steps: POPULATE_TOTAL_STEPS,
+        rows_written: count_aurora_rows(counts),
+        is_complete: false,
+    }));
+}
+
+/// Publish populate progress with custom step names and totals.
+fn publish_progress(
+    state: &SimulatorState,
+    step: usize,
+    step_names: &[&str],
+    total_steps: usize,
+    rows_written: u64,
+) {
+    state.set_populate_progress(Some(PopulateProgress {
+        current_step: step_names[step].to_string(),
+        steps_done: step,
+        total_steps,
+        rows_written,
+        is_complete: false,
+    }));
+}
+
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// This is Phase 1 of the data lifecycle (POST /populate). It generates all
 /// relational data but does NOT write to DynamoDB. DynamoDB writes happen on
 /// the day of each appointment via `run_simulate`.
+///
+/// Progress is published to `SimulatorState::populate_progress` at each step
+/// so the UI can render a live progress bar.
 ///
 /// # Execution Order
 /// 1. Insurance companies (7 fixed carriers)
@@ -130,8 +239,10 @@ impl SimulationContext {
 /// 7. Patient demographics (1 per patient)
 /// 8. Patient insurance links (random plan per patient)
 /// 9. Clinic schedules (provider-clinic-day combinations)
-/// 10. Appointments (N per patient, dated 1–89 days in the future)
+/// 10. Appointments (N per patient, within configured date range)
 /// 11. Medical records (N per appointment)
+/// 12. Patient visits (one per appointment)
+/// 13. Patient vitals (one per visit)
 pub async fn run_populate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -140,52 +251,60 @@ pub async fn run_populate(
 ) -> Result<(), AppError> {
     let mut ctx = SimulationContext::new(pool, dynamo_client, config);
 
-    tracing::info!("Starting populate run");
+    tracing::info!(
+        "Starting populate run (appointments {} to {})",
+        ctx.config.start_date, ctx.config.end_date
+    );
     let start = Utc::now();
 
     // Step 1: Generate insurance companies
-    tracing::debug!("Generating insurance companies");
+    set_populate_step(state, 0, &ctx.counts);
     insurance::generate_insurance_companies(&mut ctx).await?;
 
     // Step 2: Generate insurance plans
-    tracing::debug!("Generating insurance plans");
+    set_populate_step(state, 1, &ctx.counts);
     insurance::generate_insurance_plans(&mut ctx).await?;
 
     // Step 3: Generate clinics
-    tracing::debug!("Generating clinics");
+    set_populate_step(state, 2, &ctx.counts);
     clinic::generate_clinics(&mut ctx).await?;
 
     // Step 4: Generate providers
-    tracing::debug!("Generating providers");
+    set_populate_step(state, 3, &ctx.counts);
     provider::generate_providers(&mut ctx).await?;
 
     // Step 5: Generate patients (also inserts emergency contacts inline)
-    tracing::debug!("Generating patients");
+    set_populate_step(state, 4, &ctx.counts);
     patient::generate_patients(&mut ctx).await?;
 
     // Step 6: Emergency contacts — handled inside generate_patients; no-op here
-    tracing::debug!("Generating emergency contacts");
+    set_populate_step(state, 5, &ctx.counts);
     patient::generate_emergency_contacts(&mut ctx).await?;
 
     // Step 7: Generate patient demographics (1 per patient)
-    tracing::debug!("Generating patient demographics");
+    set_populate_step(state, 6, &ctx.counts);
     patient::generate_patient_demographics(&mut ctx).await?;
 
     // Step 8: Generate patient insurance links
-    tracing::debug!("Generating patient insurance links");
+    set_populate_step(state, 7, &ctx.counts);
     patient::generate_patient_insurance(&mut ctx).await?;
 
     // Step 9: Generate clinic schedules
-    tracing::debug!("Generating clinic schedules");
+    set_populate_step(state, 8, &ctx.counts);
     clinic::generate_clinic_schedules(&mut ctx).await?;
 
     // Step 10: Generate appointments (Aurora DSQL only — no DynamoDB)
-    tracing::debug!("Generating appointments");
+    set_populate_step(state, 9, &ctx.counts);
     appointment::generate_appointments(&mut ctx).await?;
 
     // Step 11: Generate medical records
-    tracing::debug!("Generating medical records");
+    set_populate_step(state, 10, &ctx.counts);
     medical_record::generate_medical_records(&mut ctx).await?;
+
+    // Step 12-13: Generate patient visits and vitals (one each per appointment)
+    set_populate_step(state, 11, &ctx.counts);
+    visit::generate_patient_visits(&mut ctx).await?;
+    set_populate_step(state, 12, &ctx.counts);
 
     let duration = Utc::now().signed_duration_since(start);
     tracing::info!(
@@ -198,77 +317,278 @@ pub async fn run_populate(
 
     // Update global state with final counts and timestamp
     state.set_last_run(Utc::now());
-    state.set_counts(ctx.counts);
+    state.set_counts(ctx.counts.clone());
+
+    // Mark populate as complete so the UI shows the final state.
+    state.set_populate_progress(Some(PopulateProgress {
+        current_step: String::new(),
+        steps_done: POPULATE_TOTAL_STEPS,
+        total_steps: POPULATE_TOTAL_STEPS,
+        rows_written: count_aurora_rows(&ctx.counts),
+        is_complete: true,
+    }));
 
     Ok(())
 }
 
+/// Seed Aurora DSQL with static reference data only (steps 1-8).
+///
+/// Generates insurance companies, plans, clinics, providers, patients,
+/// emergency contacts, demographics, and patient insurance links.
+/// Does NOT generate date-dependent data (appointments, schedules, etc.).
+///
+/// Progress is published with 8 total steps.
+pub async fn run_populate_static(
+    pool: DbPool,
+    dynamo_client: DynamoClient,
+    config: SimulationConfig,
+    state: &SimulatorState,
+) -> Result<(), AppError> {
+    let mut ctx = SimulationContext::new(pool, dynamo_client, config);
 
-/// Row returned when querying today's appointments for DynamoDB simulation.
-#[derive(sqlx::FromRow)]
-struct TodayAppointment {
-    appointment_id:   Uuid,
-    patient_id:       Uuid,
-    clinic_id:        Uuid,
-    provider_id:      Uuid,
-    appointment_date: NaiveDateTime,
+    tracing::info!("Starting static populate (steps 1-8)");
+    let start = Utc::now();
+
+    // Step 1: Insurance Companies
+    publish_progress(state, 0, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    insurance::generate_insurance_companies(&mut ctx).await?;
+
+    // Step 2: Insurance Plans
+    publish_progress(state, 1, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    insurance::generate_insurance_plans(&mut ctx).await?;
+
+    // Step 3: Clinics
+    publish_progress(state, 2, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    clinic::generate_clinics(&mut ctx).await?;
+
+    // Step 4: Providers
+    publish_progress(state, 3, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    provider::generate_providers(&mut ctx).await?;
+
+    // Step 5: Patients (also inserts emergency contacts inline)
+    publish_progress(state, 4, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    patient::generate_patients(&mut ctx).await?;
+
+    // Step 6: Emergency contacts — handled inside generate_patients; no-op here
+    publish_progress(state, 5, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    patient::generate_emergency_contacts(&mut ctx).await?;
+
+    // Step 7: Patient Demographics
+    publish_progress(state, 6, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    patient::generate_patient_demographics(&mut ctx).await?;
+
+    // Step 8: Patient Insurance
+    publish_progress(state, 7, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    patient::generate_patient_insurance(&mut ctx).await?;
+
+    let duration = Utc::now().signed_duration_since(start);
+    tracing::info!(
+        "Static populate complete in {:.2}s — {} patients, {} providers, {} clinics",
+        duration.num_milliseconds() as f64 / 1000.0,
+        ctx.counts.patients,
+        ctx.counts.providers,
+        ctx.counts.clinics,
+    );
+
+    state.set_last_run(Utc::now());
+    state.set_counts(ctx.counts.clone());
+
+    state.set_populate_progress(Some(PopulateProgress {
+        current_step: String::new(),
+        steps_done: STATIC_TOTAL_STEPS,
+        total_steps: STATIC_TOTAL_STEPS,
+        rows_written: count_static_rows(&ctx.counts),
+        is_complete: true,
+    }));
+
+    Ok(())
 }
 
-/// Write DynamoDB records for all appointments scheduled for today.
+/// Generate date-dependent data for a specific date range (dynamic populate).
 ///
-/// This is Phase 2 of the data lifecycle (POST /simulate). It models what happens
-/// on the day of an appointment: the clinic records check-in times, vitals, and
-/// visit data into DynamoDB. Run this once per day to simulate real-time data capture.
+/// Queries existing reference data (patients, providers, clinics) from Aurora,
+/// then generates clinic schedules (first run only), appointments, medical records,
+/// and patient visits within the specified date range.
 ///
-/// # DynamoDB Rate Limit
-/// DynamoDB allows 30,000 writes/sec per table. Each appointment triggers 2 writes
-/// (patient_visit + patient_vitals), so the effective throughput cap is 15,000
-/// appointments/sec.
+/// Does NOT write to DynamoDB — that's the responsibility of POST /simulate.
+/// Counts are updated additively so this can be called multiple times for different ranges.
 ///
-/// The semaphore caps concurrency at DYNAMO_CONCURRENCY = 128 in-flight requests.
-/// At ~5ms average DynamoDB round-trip: 128 / 0.005 ≈ 25,600 writes/sec per table —
-/// safely below the 30,000/sec limit with headroom for latency variance.
+/// Requires a prior run of `run_populate_static` to have seeded reference data.
+pub async fn run_populate_dynamic(
+    pool: DbPool,
+    dynamo_client: DynamoClient,
+    state: &SimulatorState,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    appointments_per_day: usize,
+    records_per_appointment: usize,
+) -> Result<(), AppError> {
+    tracing::info!(
+        "Starting dynamic populate ({} to {}, {} appts/day, {} records/appt)",
+        start_date, end_date, appointments_per_day, records_per_appointment
+    );
+    let start = Utc::now();
+
+    // Phase A: Query existing reference data from Aurora.
+    let patient_rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT patient_id FROM vital_fold.patient"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let provider_rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT provider_id FROM vital_fold.provider"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    let clinic_rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT clinic_id FROM vital_fold.clinic"
+    )
+    .fetch_all(&pool)
+    .await?;
+
+    if patient_rows.is_empty() || provider_rows.is_empty() || clinic_rows.is_empty() {
+        return Err(AppError::BadRequest(
+            "No reference data found. Run POST /populate/static first.".to_string()
+        ));
+    }
+
+    let pt_ids: Vec<Uuid>   = patient_rows.into_iter().map(|(id,)| id).collect();
+    let prov_ids: Vec<Uuid> = provider_rows.into_iter().map(|(id,)| id).collect();
+    let cl_ids: Vec<Uuid>   = clinic_rows.into_iter().map(|(id,)| id).collect();
+
+    tracing::info!(
+        "Reference data loaded: {} patients, {} providers, {} clinics",
+        pt_ids.len(), prov_ids.len(), cl_ids.len()
+    );
+
+    let mut counts = state.get_counts();
+
+    // Step 1: Clinic Schedules — only on first dynamic run
+    publish_progress(state, 0, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    if counts.clinic_schedules == 0 {
+        let mut ctx = SimulationContext::new(
+            pool.clone(), dynamo_client.clone(), SimulationConfig::default(),
+        );
+        ctx.provider_ids = prov_ids.clone();
+        ctx.clinic_ids = cl_ids.clone();
+        clinic::generate_clinic_schedules(&mut ctx).await?;
+        counts.clinic_schedules = ctx.counts.clinic_schedules;
+        tracing::info!("Generated {} clinic schedules", counts.clinic_schedules);
+    } else {
+        tracing::info!("Clinic schedules already exist ({}), skipping", counts.clinic_schedules);
+    }
+
+    // Step 2: Appointments
+    publish_progress(state, 1, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    let appointments = appointment::generate_appointments_by_day(
+        &pool, &pt_ids, &prov_ids, &cl_ids,
+        start_date, end_date, appointments_per_day,
+    ).await?;
+    let new_appointments = appointments.len();
+    counts.appointments += new_appointments;
+
+    // Step 3: Medical Records
+    publish_progress(state, 2, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    let new_medical_records = medical_record::generate_medical_records_for_range(
+        &pool, &appointments, records_per_appointment,
+    ).await?;
+    counts.medical_records += new_medical_records;
+
+    // Step 4: Patient Visits
+    publish_progress(state, 3, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    let (new_visits, new_vitals) = visit::generate_visits_for_appointments(
+        &pool, &appointments,
+    ).await?;
+    counts.patient_visits += new_visits;
+
+    // Step 5: Patient Vitals (already generated above, just track count)
+    publish_progress(state, 4, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    counts.patient_vitals += new_vitals;
+
+    let duration = Utc::now().signed_duration_since(start);
+    tracing::info!(
+        "Dynamic populate complete in {:.2}s — {} appointments, {} medical records, {} visits, {} vitals",
+        duration.num_milliseconds() as f64 / 1000.0,
+        new_appointments, new_medical_records, new_visits, new_vitals,
+    );
+
+    state.set_last_run(Utc::now());
+    state.set_counts(counts.clone());
+
+    state.set_populate_progress(Some(PopulateProgress {
+        current_step: String::new(),
+        steps_done: DYNAMIC_TOTAL_STEPS,
+        total_steps: DYNAMIC_TOTAL_STEPS,
+        rows_written: count_dynamic_rows(&counts),
+        is_complete: true,
+    }));
+
+    Ok(())
+}
+
+/// Query distinct dates that have appointments in Aurora DSQL.
 ///
-/// If today's appointment count exceeds ~75,000, the semaphore naturally throttles
-/// the write rate via backpressure. No additional rate limiting is needed.
+/// Returns dates sorted ascending. Used by the frontend calendar to show
+/// which dates are already populated.
+pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppError> {
+    let rows: Vec<(NaiveDate,)> = sqlx::query_as(
+        "SELECT DISTINCT appointment_date::date as d FROM vital_fold.appointment ORDER BY d"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(|(d,)| d).collect())
+}
+
+
+/// Write DynamoDB records for all visits scheduled for today by reading from Aurora.
 ///
-/// # Appointment Date Note
-/// Populate generates appointments 1–89 days in the future. This function queries
-/// for `appointment_date::date = CURRENT_DATE`. In normal operation, call it once
-/// per calendar day to process that day's scheduled visits.
+/// This is Phase 2 of the data lifecycle (POST /simulate). It JOINs patient_visit
+/// and patient_vitals from Aurora DSQL where checkin_time matches today, then writes
+/// each to both DynamoDB tables. No random data is generated — all values come from Aurora.
+///
+/// The semaphore caps concurrency at 40 in-flight DynamoDB requests to stay
+/// within DynamoDB's 4,000 WCU on-demand throughput limit per table.
 pub async fn run_simulate(
     pool: DbPool,
     dynamo_client: DynamoClient,
     state: &SimulatorState,
 ) -> Result<(), AppError> {
-    tracing::info!("Starting simulate run — querying today's appointments");
+    use crate::models::PatientVisitWithVitals;
+
+    tracing::info!("Starting simulate run — querying today's visits from Aurora");
     let start = Utc::now();
 
-    // Fetch all appointments scheduled for today.
-    // appointment_date is stored as TIMESTAMP; cast to DATE for date-only comparison.
-    let rows: Vec<TodayAppointment> = sqlx::query_as(
-        "SELECT appointment_id, patient_id, clinic_id, provider_id, appointment_date \
-         FROM vital_fold.appointment \
-         WHERE appointment_date::date = CURRENT_DATE"
+    // JOIN patient_visit + patient_vitals for today's visits.
+    let visits: Vec<PatientVisitWithVitals> = sqlx::query_as(
+        "SELECT v.patient_visit_id, v.patient_id, v.clinic_id, v.provider_id, \
+                v.checkin_time, v.checkout_time, v.provider_seen_time, \
+                v.ekg_usage, v.estimated_copay, v.creation_time, v.record_expiration_epoch, \
+                vt.height, vt.weight, vt.blood_pressure, vt.heart_rate, \
+                vt.temperature, vt.oxygen_saturation \
+         FROM vital_fold.patient_visit v \
+         JOIN vital_fold.patient_vitals vt ON v.patient_visit_id = vt.patient_visit_id \
+         WHERE v.checkin_time::date = CURRENT_DATE"
     )
     .fetch_all(&pool)
     .await?;
 
-    let total = rows.len();
+    let total = visits.len();
 
     if total == 0 {
         tracing::warn!(
-            "Simulate run found 0 appointments for today. \
+            "Simulate run found 0 visits for today. \
              Run POST /populate first, then call POST /simulate on a day when appointments exist."
         );
         state.set_last_run(Utc::now());
         return Ok(());
     }
 
-    tracing::info!("Found {} appointments for today — writing to DynamoDB", total);
+    tracing::info!("Found {} visits for today — writing to DynamoDB", total);
 
-    // Diagnostic: confirm the DynamoDB tables are reachable and log the region.
-    // This runs synchronously before any writes so errors are immediately visible.
+    // Diagnostic: confirm the DynamoDB tables are reachable.
     for table_name in &["patient_visit", "patient_vitals"] {
         match dynamo_client.describe_table().table_name(*table_name).send().await {
             Ok(resp) => {
@@ -284,65 +604,66 @@ pub async fn run_simulate(
         }
     }
 
-    // Bounded concurrency: cap simultaneous DynamoDB requests to stay well under
-    // the 30,000 writes/sec per-table limit (see function doc for rate math).
-    const DYNAMO_CONCURRENCY: usize = 128;
+    // Bounded concurrency for DynamoDB writes.
+    // Each visit spawns 2 writes (patient_visit + patient_vitals).
+    const DYNAMO_CONCURRENCY: usize = 40;
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(DYNAMO_CONCURRENCY));
-    let mut handles: Vec<tokio::task::JoinHandle<bool>> = Vec::with_capacity(total * 2);
+    let mut visit_handles: Vec<tokio::task::JoinHandle<bool>> = Vec::with_capacity(total);
+    let mut vitals_handles: Vec<tokio::task::JoinHandle<bool>> = Vec::with_capacity(total);
 
-    for row in rows {
-        // patient_visit write
-        let permit     = sem.clone().acquire_owned().await.unwrap();
-        let client     = dynamo_client.clone();
-        let pt_id      = row.patient_id;
-        let cl_id      = row.clinic_id;
-        let appt_id    = row.appointment_id;
-        let pr_id      = row.provider_id;
-        let appt_dt    = row.appointment_date;
-        handles.push(tokio::spawn(async move {
-            appointment::write_patient_visit(&client, pt_id, cl_id, appt_id, pr_id, appt_dt).await;
+    for visit in &visits {
+        // Write to patient_visit table
+        let permit = sem.clone().acquire_owned().await
+            .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
+        let client = dynamo_client.clone();
+        let v = visit.clone();
+        visit_handles.push(tokio::spawn(async move {
+            let ok = appointment::write_patient_visit(&client, &v).await;
             drop(permit);
-            true // signals this was a visit write
+            ok
         }));
 
-        // patient_vitals write
-        let permit     = sem.clone().acquire_owned().await.unwrap();
-        let client     = dynamo_client.clone();
-        let pt_id      = row.patient_id;
-        let cl_id      = row.clinic_id;
-        let visit_id   = row.appointment_id;
-        let pr_id      = row.provider_id;
-        handles.push(tokio::spawn(async move {
-            appointment::write_patient_vitals(&client, pt_id, cl_id, visit_id, pr_id).await;
+        // Write to patient_vitals table
+        let permit = sem.clone().acquire_owned().await
+            .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
+        let client = dynamo_client.clone();
+        let v = visit.clone();
+        vitals_handles.push(tokio::spawn(async move {
+            let ok = appointment::write_patient_vitals(&client, &v).await;
             drop(permit);
-            false // signals this was a vitals write
+            ok
         }));
     }
 
-    // Drain all handles and tally completed writes.
-    // Task panics are ignored — the write functions never panic.
-    let mut visits_written  = 0usize;
-    let mut vitals_written  = 0usize;
-    for h in handles {
-        if let Ok(is_visit) = h.await {
-            if is_visit { visits_written  += 1; }
-            else        { vitals_written  += 1; }
+    // Drain handles and tally successful writes per table.
+    let mut visit_writes_ok = 0usize;
+    for h in visit_handles {
+        match h.await {
+            Ok(true) => visit_writes_ok += 1,
+            Ok(false) => {} // DynamoDB error already logged
+            Err(e) => tracing::error!("DynamoDB visit write task panicked: {:?}", e),
+        }
+    }
+    let mut vitals_writes_ok = 0usize;
+    for h in vitals_handles {
+        match h.await {
+            Ok(true) => vitals_writes_ok += 1,
+            Ok(false) => {} // DynamoDB error already logged
+            Err(e) => tracing::error!("DynamoDB vitals write task panicked: {:?}", e),
         }
     }
 
     let duration = Utc::now().signed_duration_since(start);
     tracing::info!(
-        "Simulate complete in {:.2}s — {} patient_visit + {} patient_vitals written to DynamoDB",
+        "Simulate complete in {:.2}s — {}/{} visit writes, {}/{} vitals writes",
         duration.num_milliseconds() as f64 / 1000.0,
-        visits_written,
-        vitals_written,
+        visit_writes_ok, total, vitals_writes_ok, total,
     );
 
-    // Merge DynamoDB counts into whatever counts are already stored in state
-    // (populate counts remain; only the dynamo fields are updated).
+    // Use actual success counts so the dashboard reflects reality.
     let mut counts = state.get_counts();
-    counts.dynamo_patient_visits = visits_written;
-    counts.dynamo_patient_vitals = vitals_written;
+    counts.dynamo_patient_visits = visit_writes_ok;
+    counts.dynamo_patient_vitals = vitals_writes_ok;
     state.set_last_run(Utc::now());
     state.set_counts(counts);
 
@@ -567,7 +888,7 @@ async fn animate_single_day(
 /// Run a single-day heatmap for today's appointments.
 ///
 /// If DynamoDB hasn't been populated yet (dynamo_patient_visits == 0), auto-triggers
-/// `run_simulate` first to write patient_visit + patient_vitals records, then animates
+/// `run_simulate` first to write patient_visit records, then animates
 /// hour-by-hour (9am–5pm) appointment counts per clinic.
 pub async fn run_today_heatmap(
     pool: DbPool,
@@ -627,6 +948,192 @@ pub async fn run_heatmap_replay(
     tracing::info!("Replay: animating {} with {}s per window", today, window_interval_secs);
     animate_single_day(&pool, state, today, &clinics, window_interval_secs).await?;
     tracing::info!("Replay complete for {}", today);
+
+    Ok(())
+}
+
+/// Sync existing Aurora visit + vitals data to DynamoDB for a specific date range.
+///
+/// Reads from patient_visit JOIN patient_vitals in Aurora and writes to both
+/// DynamoDB tables (patient_visit + patient_vitals). No Aurora data is generated.
+///
+/// Progress is published to `DynamoProgress` so the UI can show a live progress bar.
+/// Requires a prior Dynamic Populate run to have created visits for the target dates.
+pub async fn run_date_range_simulate(
+    pool: DbPool,
+    dynamo_client: DynamoClient,
+    state: &SimulatorState,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<(), AppError> {
+    use crate::engine_state::DynamoProgress;
+
+    tracing::info!(
+        "Starting date-range DynamoDB sync: {} to {}",
+        start_date, end_date
+    );
+    let start = Utc::now();
+
+    // Publish initial progress while querying Aurora.
+    state.set_dynamo_progress(Some(DynamoProgress {
+        operation: "Syncing to DynamoDB".to_string(),
+        current_table: "Querying Aurora".to_string(),
+        tables_done: 0,
+        total_tables: 2,
+        items_processed: 0,
+        total_items: 0,
+        is_complete: false,
+    }));
+
+    // Read visits from Aurora (JOIN) and write to both DynamoDB tables.
+    use crate::models::PatientVisitWithVitals;
+
+    let visits: Vec<PatientVisitWithVitals> = sqlx::query_as(
+        "SELECT v.patient_visit_id, v.patient_id, v.clinic_id, v.provider_id, \
+                v.checkin_time, v.checkout_time, v.provider_seen_time, \
+                v.ekg_usage, v.estimated_copay, v.creation_time, v.record_expiration_epoch, \
+                vt.height, vt.weight, vt.blood_pressure, vt.heart_rate, \
+                vt.temperature, vt.oxygen_saturation \
+         FROM vital_fold.patient_visit v \
+         JOIN vital_fold.patient_vitals vt ON v.patient_visit_id = vt.patient_visit_id \
+         WHERE v.checkin_time::date >= $1 AND v.checkin_time::date <= $2"
+    )
+    .bind(start_date)
+    .bind(end_date)
+    .fetch_all(&pool)
+    .await?;
+
+    if visits.is_empty() {
+        tracing::warn!(
+            "Date-range DynamoDB sync: 0 visits found for {} to {}. Nothing to sync.",
+            start_date, end_date
+        );
+        state.set_last_run(Utc::now());
+        state.set_dynamo_progress(None);
+        return Ok(());
+    }
+
+    let total = visits.len() as u64;
+    // Total items = visits written to patient_visit + visits written to patient_vitals
+    let total_items = total * 2;
+
+    tracing::info!(
+        "Date-range DynamoDB sync: found {} visits to write for {} to {}",
+        visits.len(), start_date, end_date
+    );
+
+    state.set_dynamo_progress(Some(DynamoProgress {
+        operation: "Syncing to DynamoDB".to_string(),
+        current_table: "Patient Visits".to_string(),
+        tables_done: 0,
+        total_tables: 2,
+        items_processed: 0,
+        total_items,
+        is_complete: false,
+    }));
+
+    const DYNAMO_CONCURRENCY: usize = 40;
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(DYNAMO_CONCURRENCY));
+    let mut visit_handles: Vec<tokio::task::JoinHandle<bool>> = Vec::with_capacity(visits.len());
+    let mut vitals_handles: Vec<tokio::task::JoinHandle<bool>> = Vec::with_capacity(visits.len());
+
+    for visit in &visits {
+        if !state.is_running() {
+            tracing::info!("Date-range DynamoDB sync stopped by user during writes");
+            break;
+        }
+
+        // Write to patient_visit table
+        let permit = sem.clone().acquire_owned().await
+            .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
+        let client = dynamo_client.clone();
+        let v = visit.clone();
+        visit_handles.push(tokio::spawn(async move {
+            let ok = appointment::write_patient_visit(&client, &v).await;
+            drop(permit);
+            ok
+        }));
+
+        // Write to patient_vitals table
+        let permit = sem.clone().acquire_owned().await
+            .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
+        let client = dynamo_client.clone();
+        let v = visit.clone();
+        vitals_handles.push(tokio::spawn(async move {
+            let ok = appointment::write_patient_vitals(&client, &v).await;
+            drop(permit);
+            ok
+        }));
+    }
+
+    // Drain visit handles (table 1 of 2), publishing progress after each completion.
+    let mut visit_writes_ok = 0usize;
+    for (i, h) in visit_handles.into_iter().enumerate() {
+        match h.await {
+            Ok(true) => visit_writes_ok += 1,
+            Ok(false) => {}
+            Err(e) => tracing::error!("DynamoDB visit write task panicked: {:?}", e),
+        }
+        // Publish progress every 50 completions or on the last one.
+        if (i + 1) % 50 == 0 || i + 1 == total as usize {
+            state.set_dynamo_progress(Some(DynamoProgress {
+                operation: "Syncing to DynamoDB".to_string(),
+                current_table: "Patient Visits".to_string(),
+                tables_done: 0,
+                total_tables: 2,
+                items_processed: (i + 1) as u64,
+                total_items,
+                is_complete: false,
+            }));
+        }
+    }
+
+    // Drain vitals handles (table 2 of 2).
+    let mut vitals_writes_ok = 0usize;
+    for (i, h) in vitals_handles.into_iter().enumerate() {
+        match h.await {
+            Ok(true) => vitals_writes_ok += 1,
+            Ok(false) => {}
+            Err(e) => tracing::error!("DynamoDB vitals write task panicked: {:?}", e),
+        }
+        if (i + 1) % 50 == 0 || i + 1 == total as usize {
+            state.set_dynamo_progress(Some(DynamoProgress {
+                operation: "Syncing to DynamoDB".to_string(),
+                current_table: "Patient Vitals".to_string(),
+                tables_done: 1,
+                total_tables: 2,
+                items_processed: total + (i + 1) as u64,
+                total_items,
+                is_complete: false,
+            }));
+        }
+    }
+
+    let duration = Utc::now().signed_duration_since(start);
+    tracing::info!(
+        "Date-range DynamoDB sync complete in {:.2}s — \
+         {}/{} visit writes, {}/{} vitals writes",
+        duration.num_milliseconds() as f64 / 1000.0,
+        visit_writes_ok, visits.len(), vitals_writes_ok, visits.len(),
+    );
+
+    // Mark complete.
+    state.set_dynamo_progress(Some(DynamoProgress {
+        operation: "Syncing to DynamoDB".to_string(),
+        current_table: String::new(),
+        tables_done: 2,
+        total_tables: 2,
+        items_processed: (visit_writes_ok + vitals_writes_ok) as u64,
+        total_items,
+        is_complete: true,
+    }));
+
+    // Update state with DynamoDB write counts only.
+    let mut counts = state.get_counts();
+    counts.dynamo_patient_visits  += visit_writes_ok;
+    counts.dynamo_patient_vitals  += vitals_writes_ok;
+    state.set_last_run(Utc::now());
+    state.set_counts(counts);
 
     Ok(())
 }

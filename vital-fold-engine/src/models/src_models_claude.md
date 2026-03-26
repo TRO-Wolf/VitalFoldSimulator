@@ -1,6 +1,6 @@
 # `src/models/` — Claude Context
 
-> **Purpose:** Self-contained reference for all domain models in `src/models/`. Covers every struct, field, trait impl, and validation rule across all 7 model files.
+> **Purpose:** Self-contained reference for all domain models in `src/models/`. Covers every struct, field, trait impl, and validation rule across all 8 model files.
 
 ---
 
@@ -27,6 +27,7 @@ pub mod provider;
 pub mod clinic;
 pub mod appointment;
 pub mod medical_record;
+pub mod patient_visit;
 
 pub use user::*;
 pub use insurance::*;
@@ -35,6 +36,7 @@ pub use provider::*;
 pub use clinic::*;
 pub use appointment::*;
 pub use medical_record::*;
+pub use patient_visit::*;
 ```
 
 All types are re-exported — import any model as `use crate::models::SomeStruct`.
@@ -81,24 +83,6 @@ pub struct User {
 
 ---
 
-### `RegisterRequest` — POST body for `/api/v1/auth/register`
-
-```rust
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct RegisterRequest {
-    pub email: String,     // example: "user@example.com"
-    pub password: String,  // example: "SecurePassword123"
-}
-```
-
-**Validation (`validate() -> Result<(), AppError>`):**
-- Email: not empty (trimmed), must contain `@`, must contain `.`, length ≥ 5 → `AppError::BadRequest`
-- Password: not empty, length ≥ 8 → `AppError::BadRequest`
-
-Called in `handlers/auth.rs` as `req.validate()?` before any DB operation.
-
----
-
 ### `LoginRequest` — POST body for `/api/v1/auth/login`
 
 ```rust
@@ -113,11 +97,11 @@ pub struct LoginRequest {
 - Email: not empty (trimmed) → `AppError::BadRequest`
 - Password: not empty → `AppError::BadRequest`
 
-Less strict than `RegisterRequest` — login does not format-check the email.
+Login validation checks only that fields are non-empty — it does not format-check the email.
 
 ---
 
-### `AuthResponse` — Response for register and login
+### `AuthResponse` — Response for login
 
 ```rust
 #[derive(Debug, Serialize, ToSchema)]
@@ -127,7 +111,7 @@ pub struct AuthResponse {
 }
 ```
 
-Returned as `201 Created` (register) or `200 OK` (login, admin-login).
+Returned as `200 OK` by login and admin-login.
 
 ---
 
@@ -407,7 +391,7 @@ pub struct Appointment {
 **Lifecycle:**
 - Populated during `POST /populate` (0–89 days in future)
 - Queried during `POST /simulate` (`WHERE appointment_date::date = CURRENT_DATE`)
-- Each appointment produces 1 `patient_visit` + 1 `patient_vitals` DynamoDB record
+- Each appointment produces 1 `patient_visit` Aurora row (with embedded vitals) and 1 DynamoDB record
 
 ---
 
@@ -446,6 +430,44 @@ pub struct MedicalRecord {
 
 ---
 
+## `patient_visit.rs` — Patient Visit Domain (with Embedded Vitals)
+
+**Imports:** `chrono::NaiveDateTime`, `serde`, `sqlx::types::BigDecimal`, `uuid::Uuid`
+
+### `PatientVisit`
+
+```rust
+pub struct PatientVisit {
+    pub patient_visit_id:        Uuid,
+    pub patient_id:              Uuid,          // FK → Patient
+    pub clinic_id:               Uuid,          // FK → Clinic
+    pub provider_id:             Uuid,          // FK → Provider
+    pub checkin_time:            NaiveDateTime,
+    pub checkout_time:           Option<NaiveDateTime>,
+    pub provider_seen_time:      Option<NaiveDateTime>,
+    pub ekg_usage:               bool,          // 20% true
+    pub estimated_copay:         BigDecimal,    // $20–$150
+    pub creation_time:           NaiveDateTime,
+    pub record_expiration_epoch: i64,           // Unix epoch + 7 years
+    // Embedded vitals (wide-column pivot from former patient_vitals table)
+    pub height:                  BigDecimal,    // inches
+    pub weight:                  BigDecimal,    // pounds
+    pub blood_pressure:          String,        // "SYS/DIA" format
+    pub heart_rate:              i32,           // 50–120 bpm
+    pub temperature:             BigDecimal,    // °F, 97.0–99.5
+    pub oxygen_saturation:       BigDecimal,    // SpO2 92–100%
+    pub pulse_rate:              i32,           // 50–120 bpm
+}
+```
+
+**Table:** `vital_fold.patient_visits` | **PK:** `patient_visit_id`
+
+**17 columns total** — vitals are stored directly on the visit row (no separate `patient_vitals` table). This 1:1 relationship eliminates the 7x EAV row multiplier.
+
+**Generated during:** `POST /populate` (Phase 1, Aurora) → `POST /simulate` reads these rows and writes to DynamoDB `patient_visit` table with embedded vital attributes.
+
+---
+
 ## Quick Reference: Field Types by Category
 
 | Type | Used for |
@@ -456,7 +478,7 @@ pub struct MedicalRecord {
 | `NaiveDateTime` | Timestamp fields without timezone (appointments, records) |
 | `NaiveTime` | Time-of-day (clinic schedule start/end) |
 | `DateTime<Utc>` | UTC timestamps in auth models (`User.created_at`) |
-| `BigDecimal` | Financial amounts (`InsurancePlan.deductible_amount`, `copay_amount`) |
+| `BigDecimal` | Financial amounts and vitals (`InsurancePlan.deductible_amount`, `copay_amount`; `PatientVisit.height`, `weight`, `temperature`, `oxygen_saturation`, `estimated_copay`) |
 | `i32` | `PatientDemographics.age`, `InsuranceCompany.tax_id_number` |
 | `bool` | Flags (`prior_auth_required`, `active_plan`) |
 | `Option<T>` | Nullable fields (`coverage_end_date`, `middle_name`) |
@@ -466,7 +488,7 @@ pub struct MedicalRecord {
 ## Cross-Module Relationships
 
 **Imported by:**
-- `handlers/auth.rs` — `RegisterRequest`, `LoginRequest`, `AuthResponse`, `User`, `UserProfile`
+- `handlers/auth.rs` — `LoginRequest`, `AuthResponse`, `User`, `UserProfile`
 - `handlers/user.rs` — `User`, `UserProfile`
 - `handlers/simulation.rs` — `MessageResponse`, `SimulationStatusResponse`
 - `generators/*.rs` — no direct model imports; generators build data via raw SQL columns

@@ -237,12 +237,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_user_registration() {
+    async fn test_user_login() {
         // Setup
         let pool = create_test_db().await;
 
         // Execute
-        let result = register_user(&pool, "test@example.com", "password").await;
+        let result = login_user(&pool, "test@example.com", "password").await;
 
         // Assert
         assert!(result.is_ok());

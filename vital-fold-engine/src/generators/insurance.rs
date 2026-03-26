@@ -97,7 +97,7 @@ pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(),
                 )
             };
 
-            let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+            let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).expect("2024-01-01 is a valid date");
 
             let result: (uuid::Uuid,) = sqlx::query_as(
                 "INSERT INTO vital_fold.insurance_plan (plan_name, company_id, deductible_amount, copay_amount, prior_auth_required, active_plan, active_start_date) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING insurance_plan_id"

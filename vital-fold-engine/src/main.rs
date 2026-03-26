@@ -21,10 +21,10 @@ use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use handlers::{health, auth, user, simulation};
-use handlers::simulation::{PopulateRequest, TimelapseRequest, VisitorsResponse, ClinicVisitors, VisitorEntry};
-use models::{RegisterRequest, LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
+use handlers::simulation::{PopulateRequest, StaticPopulateRequest, DynamicPopulateRequest, TimelapseRequest, DateRangeRequest, VisitorsResponse, ClinicVisitors, VisitorEntry};
+use models::{LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
 use handlers::auth::AdminLoginRequest;
-use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
+use engine_state::{SimulationCounts, ClinicActivity, TimelapseState, ResetProgress, PopulateProgress};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -39,12 +39,16 @@ use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
     ),
     paths(
         health::health_check,
-        auth::register,
         auth::login,
         auth::admin_login,
         user::me,
         simulation::start_populate,
+        simulation::start_populate_static,
+        simulation::start_populate_dynamic,
+        simulation::get_populated_dates_handler,
+        simulation::reset_dynamic_data,
         simulation::start_simulate,
+        simulation::start_date_range_simulate,
         simulation::stop_simulation,
         simulation::get_status,
         simulation::reset_data,
@@ -57,7 +61,6 @@ use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
     ),
     components(
         schemas(
-            RegisterRequest,
             LoginRequest,
             AuthResponse,
             UserProfile,
@@ -65,10 +68,15 @@ use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
             SimulationStatusResponse,
             SimulationCounts,
             PopulateRequest,
+            StaticPopulateRequest,
+            DynamicPopulateRequest,
+            DateRangeRequest,
             AdminLoginRequest,
             TimelapseRequest,
             TimelapseState,
             ClinicActivity,
+            ResetProgress,
+            PopulateProgress,
             VisitorsResponse,
             ClinicVisitors,
             VisitorEntry
@@ -76,7 +84,7 @@ use engine_state::{SimulationCounts, ClinicActivity, TimelapseState};
     ),
     tags(
         (name = "Health",       description = "Health check endpoints"),
-        (name = "Authentication", description = "User registration and login"),
+        (name = "Authentication", description = "User login"),
         (name = "User",         description = "User profile management"),
         (name = "Population",   description = "Phase 1: seed Aurora DSQL with synthetic healthcare data"),
         (name = "Simulation",   description = "Phase 2: write DynamoDB records for today's appointments, plus run control")
@@ -110,8 +118,8 @@ async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("vital_fold_engine=info".parse().unwrap())
-                .add_directive("actix_web=info".parse().unwrap()),
+                .add_directive("vital_fold_engine=info".parse().expect("valid tracing directive"))
+                .add_directive("actix_web=info".parse().expect("valid tracing directive")),
         )
         .init();
 

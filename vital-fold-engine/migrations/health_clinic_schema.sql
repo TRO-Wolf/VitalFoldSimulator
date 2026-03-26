@@ -6,6 +6,73 @@ CREATE SCHEMA IF NOT EXISTS vital_fold;
 -- TABLE CREATION
 --=============================================================================
 --=============================================================================
+CREATE TABLE IF NOT EXISTS vital_fold.patient_visit (
+    patient_visit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id UUID NOT NULL,
+    clinic_id UUID NOT NULL,
+    provider_id UUID NOT NULL,
+    checkin_time TIMESTAMP NOT NULL,
+    checkout_time TIMESTAMP,
+    provider_seen_time TIMESTAMP,
+    ekg_usage BOOLEAN NOT NULL,
+    estimated_copay DECIMAL(10, 2) NOT NULL,
+    creation_time TIMESTAMP NOT NULL,
+    record_expiration_epoch BIGINT NOT NULL,
+);
+
+--=============================================================================
+-- INDEX DEFINITIONS
+--=============================================================================
+CREATE INDEX ASYNC IF NOT EXISTS idx_vt_patient_visit_patient_id
+    ON vital_fold.patient_visit (
+        patient_id
+    );
+
+CREATE INDEX ASYNC IF NOT EXISTS idx_vt_patient_visit_clinic_id
+    ON vital_fold.patient_visit (
+        clinic_id
+    );
+
+
+--=============================================================================
+--=============================================================================
+-- TABLE CREATION
+--=============================================================================
+--=============================================================================
+CREATE TABLE IF NOT EXISTS vital_fold.patient_vitals (
+    patient_visit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id UUID NOT NULL,
+    clinic_id UUID NOT NULL,
+    provider_id UUID NOT NULL,
+    height DECIMAL(5, 2) NOT NULL,
+    weight DECIMAL(5, 2) NOT NULL,
+    blood_pressure VARCHAR(20) NOT NULL,
+    heart_rate INT NOT NULL,
+    temperature DECIMAL(4, 1) NOT NULL,
+    oxygen_saturation DECIMAL(4, 1) NOT NULL,
+    creation_time TIMESTAMP NOT NULL,
+    record_expiration_epoch BIGINT NOT NULL
+);
+
+--=============================================================================
+-- INDEX DEFINITIONS
+--=============================================================================
+CREATE INDEX ASYNC IF NOT EXISTS idx_vt_patient_vitals_patient_id
+    ON vital_fold.patient_vitals (
+        patient_id
+    );
+
+CREATE INDEX ASYNC IF NOT EXISTS idx_vt_patient_vitals_clinic_id
+    ON vital_fold.patient_vitals (
+        clinic_id
+    );
+
+
+--=============================================================================
+--=============================================================================
+-- TABLE CREATION
+--=============================================================================
+--=============================================================================
 CREATE TABLE IF NOT EXISTS vital_fold.insurance_company (
     company_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_name VARCHAR(255) NOT NULL,

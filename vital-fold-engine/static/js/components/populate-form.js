@@ -7,11 +7,9 @@ const FIELDS = [
   { key: 'providers', label: 'Providers', default: 50 },
   { key: 'patients', label: 'Patients', default: 50000 },
   { key: 'plans_per_company', label: 'Plans / Company', default: 3 },
-  { key: 'appointments_per_patient', label: 'Appts / Patient', default: 2 },
-  { key: 'records_per_appointment', label: 'Records / Appt', default: 1 },
 ];
 
-export function PopulateForm({ config, onChange, disabled }) {
+export function PopulateForm({ config, onChange, disabled, onSubmit, loading, hasStaticData }) {
   function handleInput(key, value) {
     const num = parseInt(value, 10);
     if (!isNaN(num) && num > 0) {
@@ -21,29 +19,32 @@ export function PopulateForm({ config, onChange, disabled }) {
 
   return html`
     <article>
-      <header>Populate Configuration</header>
+      <header>Static Populate (Step 1)</header>
+      <p style="margin-bottom: 0.75rem; color: var(--pico-muted-color); font-size: 0.875rem;">
+        Generate reference data: insurance companies, plans, clinics, providers,
+        patients, emergency contacts, demographics, and insurance links.
+      </p>
       <div class="grid">
-        ${FIELDS.slice(0, 2).map(f => html`
+        ${FIELDS.map(f => html`
           <label key=${f.key}>
             ${f.label}
             <input type="number" min="1"
                    value=${config[f.key]}
                    onInput=${e => handleInput(f.key, e.target.value)}
-                   disabled=${disabled} />
+                   disabled=${disabled || hasStaticData} />
           </label>
         `)}
       </div>
-      <div class="grid">
-        ${FIELDS.slice(2).map(f => html`
-          <label key=${f.key}>
-            ${f.label}
-            <input type="number" min="1"
-                   value=${config[f.key]}
-                   onInput=${e => handleInput(f.key, e.target.value)}
-                   disabled=${disabled} />
-          </label>
-        `)}
-      </div>
+      ${hasStaticData && html`
+        <p style="color: var(--pico-ins-color); font-size: 0.875rem; margin-bottom: 0.5rem;">
+          Static data already populated. Reset Aurora to re-run.
+        </p>
+      `}
+      <button onclick=${onSubmit}
+              disabled=${disabled || loading || hasStaticData}
+              aria-busy=${loading}>
+        Populate Static Data
+      </button>
     </article>
   `;
 }

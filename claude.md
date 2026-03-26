@@ -120,13 +120,14 @@ vitalFoldEngine/
     │   └── auth.rs               # generate_token(), validate_token(), jwt_validator()
     ├── models/
     │   ├── mod.rs
-    │   ├── user.rs               # User, RegisterRequest, LoginRequest, AuthResponse, UserProfile
+    │   ├── user.rs               # User, LoginRequest, AuthResponse, UserProfile
     │   ├── insurance.rs          # InsuranceCompany, InsurancePlan, PatientInsurance
     │   ├── patient.rs            # Patient, EmergencyContact, PatientDemographics
     │   ├── provider.rs           # Provider
     │   ├── clinic.rs             # Clinic, ClinicSchedule
     │   ├── appointment.rs        # Appointment
-    │   └── medical_record.rs     # MedicalRecord
+    │   ├── medical_record.rs     # MedicalRecord
+    │   └── patient_visit.rs      # PatientVisit (with embedded vitals)
     ├── generators/
     │   ├── mod.rs                # SimulationContext (holds shared pools/counts)
     │   ├── insurance.rs
@@ -137,7 +138,7 @@ vitalFoldEngine/
     │   └── medical_record.rs
     └── handlers/
         ├── mod.rs
-        ├── auth.rs               # POST /api/v1/auth/register, /login
+        ├── auth.rs               # POST /api/v1/auth/login, /admin-login
         ├── user.rs               # GET /api/v1/me (protected)
         ├── simulation.rs         # POST /simulate, POST /simulate/stop, GET /simulate/status
         └── health.rs             # GET /health
@@ -155,12 +156,12 @@ GET /health
 
 ### Authentication (public)
 ```
-POST /api/v1/auth/register
-Body: { "email": "user@example.com", "password": "..." }
-→ 201 Created { "token": "<jwt>", "user": { "id", "email", "created_at" } }
-
 POST /api/v1/auth/login
 Body: { "email": "user@example.com", "password": "..." }
+→ 200 OK { "token": "<jwt>", "user": { "id", "email", "created_at" } }
+
+POST /api/v1/auth/admin-login
+Body: { "username": "admin", "password": "..." }
 → 200 OK { "token": "<jwt>", "user": { "id", "email", "created_at" } }
 ```
 
@@ -372,7 +373,6 @@ Type alias: `pub type DbPool = sqlx::PgPool;`
 | Struct | Derives | Key Notes |
 |---|---|---|
 | `User` | `Serialize, Deserialize, Clone, Debug, sqlx::FromRow` | `password_hash` carries `#[serde(skip_serializing)]` |
-| `RegisterRequest` | `Deserialize, Debug` | `email: String`, `password: String` |
 | `LoginRequest` | `Deserialize, Debug` | `email: String`, `password: String` |
 | `AuthResponse` | `Serialize, Debug` | `token: String`, `user: UserProfile` |
 | `UserProfile` | `Serialize, Debug, Clone` | `id: Uuid`, `email: String`, `created_at: DateTime<Utc>` |
@@ -640,7 +640,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
 - First, generate clinic_schedule rows (provider-clinic-day assignments)
 - Then generate `appointments_per_patient` appointments per patient
 - Each appointment randomly selects a provider and clinic
-- After each appointment INSERT, write to DynamoDB `patient_visit` and `patient_vitals`
+- Appointments are inserted into Aurora only during populate; DynamoDB writes happen during simulate
 
 **`src/generators/medical_record.rs`**:
 ```rust
@@ -695,10 +695,9 @@ The simulation engine has a toggleable running state stored in an `AtomicBool` (
   - Bradycardia: "Pacemaker evaluation", "Medication review", "Holter monitor"
 
 ### DynamoDB Write Rules
-After each appointment is inserted into Aurora DSQL, write two corresponding DynamoDB items:
-- `patient_visit` table: write one item per appointment (PK: `patient_id`, SK: `clinic_id`). Populate `checkin_time`, `checkout_time`, `provider_seen_time` as generated ISO 8601 timestamps; randomly set `ekg_usage` (20% true) and generate a realistic `estimated_copay` (range $20–$150).
-- `patient_vitals` table: write one item per appointment (PK: `patient_id`, SK: `clinic_id`). Include `visit_id` linking back to the appointment UUID. Generate realistic cardiac-range vitals: heart rate 50–120 bpm, SpO2 92–100%, temperature 97.0–99.5°F, blood pressure formatted as `"SYS/DIA"`.
-- DynamoDB writes are **fire-and-forget** — log errors with `tracing::warn!` but do not fail the simulation run if a DynamoDB write fails.
+During `POST /simulate`, Aurora `patient_visits` rows (with embedded vitals) are read and written to DynamoDB:
+- `patient_visit` table: write one item per visit (PK: `patient_id`, SK: `clinic_id#visit_id`). All fields come from the Aurora row — no random generation at write time. Vital attributes (`height`, `weight`, `blood_pressure`, `heart_rate`, `temperature`, `oxygen_saturation`, `pulse_rate`) are embedded directly on the visit item.
+- DynamoDB writes are **fire-and-forget** — log errors with `tracing::error!` but do not fail the simulation run if a DynamoDB write fails.
 
 ## Configuration (Environment Variables)
 
@@ -880,36 +879,29 @@ use tracing::{info, warn, error, instrument};
 
 ## DynamoDB Tables
 
-Schema source: `dynamo.json` in the repo root. Both tables use on-demand (PAY_PER_REQUEST) billing mode. Region matches `DSQL_REGION`.
+Schema source: `docs/dynamo.md` in the repo. Single table uses on-demand (PAY_PER_REQUEST) billing mode. Region matches `DSQL_REGION`.
 
 ### `patient_visit`
 
 | Attribute | Type | Role |
 |---|---|---|
 | `patient_id` | String (UUID) | Partition key |
-| `clinic_id` | String (UUID) | Sort key |
+| `clinic_id` | String (`clinic_id#visit_id`) | Sort key |
 | `provider_id` | String (UUID) | |
 | `checkin_time` | String (ISO 8601) | |
 | `checkout_time` | String (ISO 8601) | |
 | `provider_seen_time` | String (ISO 8601) | |
 | `ekg_usage` | Boolean | Whether an EKG was performed |
-| `estimated_copay` | Float | Estimated patient copay amount |
-
-### `patient_vitals`
-
-| Attribute | Type | Role |
-|---|---|---|
-| `patient_id` | String (UUID) | Partition key |
-| `clinic_id` | String (UUID) | Sort key |
-| `provider_id` | String (UUID) | |
-| `visit_id` | String (UUID) | Links to `patient_visit` |
+| `estimated_copay` | Decimal | Estimated patient copay amount |
+| `creation_time` | Number (epoch) | |
+| `record_expiration_epoch` | Number (epoch) | |
 | `height` | Decimal | In inches |
-| `weight` | Decimal | In pounds (note: `wieght` typo preserved from source schema) |
+| `weight` | Decimal | In pounds |
 | `blood_pressure` | String | Format: `"120/80"` |
 | `heart_rate` | Decimal | Beats per minute |
 | `temperature` | Decimal | In Fahrenheit |
-| `oxygen` | Decimal | SpO2 percentage |
-| `pulses` | Decimal | Pulse rate |
+| `oxygen_saturation` | Decimal | SpO2 percentage |
+| `pulse_rate` | Decimal | Pulse rate |
 
 ---
 
@@ -922,7 +914,7 @@ Schema source: `dynamo.json` in the repo root. Both tables use on-demand (PAY_PE
 - `ssn` on `patient_demographics` is `VARCHAR(11)` — format as `XXX-XX-XXXX`.
 - Index creation uses `CREATE INDEX ASYNC` — CockroachDB/YugabyteDB syntax. Confirm Postgres dialect before running migrations in production.
 - Aurora DSQL IAM tokens expire in ~15 minutes. `db::spawn_token_refresh_task(pool.clone(), config.clone())` must be called in `main.rs` immediately after pool creation. It runs a Tokio background loop calling `pool.set_connect_options(new_opts)` every 12 minutes, pushing a fresh token into the pool without replacing it — all `web::Data<DbPool>` clones stay valid. Without this, any simulation run after the first token expires gets "access denied".
-- The `register` and `login` handlers return the same `Unauthorized("Invalid credentials")` message for both unknown email and wrong password — prevents user enumeration.
+- The `login` handler returns the same `Unauthorized("Invalid credentials")` message for both unknown email and wrong password — prevents user enumeration.
 
 ### Haiku Implementation Order
 
@@ -1204,7 +1196,7 @@ _This section is for Haiku to document any deviations, issues encountered, or cl
 
 ✅ **Step 6: src/models/** — All domain models (7 files):
 - **mod.rs**: Exports all model submodules
-- **user.rs**: User (with password_hash skip_serializing), RegisterRequest, LoginRequest, AuthResponse, UserProfile with From<User> impl
+- **user.rs**: User (with password_hash skip_serializing), LoginRequest, AuthResponse, UserProfile with From<User> impl
 - **insurance.rs**: InsuranceCompany, InsurancePlan, PatientInsurance with BigDecimal for financial fields
 - **patient.rs**: Patient, EmergencyContact, PatientDemographics (note: emergency_contact_id is VARCHAR)
 - **provider.rs**: Provider with specialty and license_type fields

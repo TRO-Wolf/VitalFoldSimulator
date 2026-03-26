@@ -11,7 +11,7 @@ Handlers are Actix Web async functions that implement the REST API. They receive
 **Files:**
 - `mod.rs` — re-exports all submodules
 - `health.rs` — `GET /health`
-- `auth.rs` — `POST /api/v1/auth/register`, `/login`, `/admin-login`
+- `auth.rs` — `POST /api/v1/auth/login`, `/admin-login`
 - `user.rs` — `GET /api/v1/me`
 - `simulation.rs` — `POST /populate`, `POST /simulate`, `POST /simulate/stop`, `GET /simulate/status`, `POST /simulate/reset`, `POST /simulate/reset-dynamo`
 
@@ -71,34 +71,6 @@ pub struct AdminLoginRequest {
     pub password: String,
 }
 ```
-
-### `register`
-
-```rust
-pub async fn register(
-    pool: web::Data<DbPool>,
-    cfg: web::Data<Config>,
-    req: web::Json<RegisterRequest>,
-) -> Result<HttpResponse, AppError>
-```
-
-| Route | Method | Auth | Success | Failure |
-|---|---|---|---|---|
-| `/api/v1/auth/register` | POST | None | `201 Created` + `AuthResponse` | See below |
-
-**Flow:**
-1. `req.validate()` — checks email format and password ≥ 8 chars (→ 400 on failure)
-2. Normalize email: `req.email.trim().to_lowercase()`
-3. `bcrypt::hash(&req.password, DEFAULT_COST)` (→ 500 on error)
-4. Generate `user_id = Uuid::new_v4()`, `now = Utc::now()`
-5. `INSERT INTO public.users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)`
-   - Duplicate key error → `AppError::BadRequest("Email already registered")`
-   - Other DB error → `AppError::Database`
-6. `generate_token(user_id, email, cfg)` (→ 500 on error)
-7. Build `UserProfile` manually (no DB round-trip): `{ id: user_id, email, created_at: now }`
-8. Return `HttpResponse::Created().json(AuthResponse { token, user: user_profile })`
-
----
 
 ### `login`
 
@@ -247,8 +219,8 @@ pub async fn start_simulate(
 **Flow:**
 1. `state.try_start()` — same atomic guard as populate
 2. Clone pool, dynamo, state; `tokio::spawn` calling `run_simulate()`
-3. `run_simulate` queries `vital_fold.appointment WHERE appointment_date::date = CURRENT_DATE`
-4. Writes `patient_visit` + `patient_vitals` DynamoDB records for each appointment found
+3. `run_simulate` queries Aurora for today's patient_visits (with embedded vitals)
+4. Writes `patient_visit` DynamoDB records (with embedded vital attributes) for each visit found
 5. Background task calls `state_clone.stop()` on completion
 6. Returns `202 Accepted` immediately
 
@@ -296,8 +268,8 @@ Returns:
   "clinic_schedules": 350,
   "appointments": 100000,
   "medical_records": 100000,
-  "dynamo_patient_visits": 1200,
-  "dynamo_patient_vitals": 1200
+  "patient_visits": 100000,
+  "dynamo_patient_visits": 1200
 }
 ```
 
@@ -321,17 +293,18 @@ pub async fn reset_data(
 **Deletes all rows from all `vital_fold` schema tables in FK-safe (children-first) order:**
 
 ```
-1. vital_fold.medical_record      (medical_record_id)
-2. vital_fold.appointment         (appointment_id)
-3. vital_fold.clinic_schedule     (schedule_id)
-4. vital_fold.patient_insurance   (patient_insurance_id)
-5. vital_fold.patient_demographics(demographics_id)
-6. vital_fold.emergency_contact   (emergency_contact_id)
-7. vital_fold.patient             (patient_id)
-8. vital_fold.provider            (provider_id)
-9. vital_fold.clinic              (clinic_id)
-10. vital_fold.insurance_plan     (insurance_plan_id)
-11. vital_fold.insurance_company  (company_id)
+1.  vital_fold.patient_visits      (patient_visit_id)
+2.  vital_fold.medical_record      (medical_record_id)
+3.  vital_fold.appointment         (appointment_id)
+4.  vital_fold.clinic_schedule     (schedule_id)
+5.  vital_fold.patient_insurance   (patient_insurance_id)
+6.  vital_fold.patient_demographics(demographics_id)
+7.  vital_fold.emergency_contact   (emergency_contact_id)
+8.  vital_fold.patient             (patient_id)
+9.  vital_fold.provider            (provider_id)
+10. vital_fold.clinic              (clinic_id)
+11. vital_fold.insurance_plan      (insurance_plan_id)
+12. vital_fold.insurance_company   (company_id)
 ```
 
 **Per-table loop (Aurora DSQL has no TRUNCATE and no `ctid`):**
@@ -357,7 +330,7 @@ pub async fn reset_dynamo(
 |---|---|---|---|---|
 | `/simulate/reset-dynamo` | POST | Bearer JWT | `200 OK` | `400` if running |
 
-Calls `delete_dynamo_table()` for both `patient_visit` and `patient_vitals`. Runs synchronously (not spawned). Both tables share key schema: `PK=patient_id (S)`, `SK=clinic_id (S)`.
+Calls `delete_dynamo_table()` for the `patient_visit` table. Runs synchronously (not spawned). Key schema: `PK=patient_id (S)`, `SK=clinic_id (S)`.
 
 ---
 
@@ -402,7 +375,6 @@ After `MAX_RETRIES` exceeded → `AppError::Internal`.
 | Endpoint | 200 | 201 | 202 | 400 | 401 | 404 | 500 |
 |---|---|---|---|---|---|---|---|
 | `GET /health` | ✓ | | | | | | |
-| `POST /api/v1/auth/register` | | ✓ | | dup email | | | bcrypt/DB |
 | `POST /api/v1/auth/login` | ✓ | | | empty fields | bad creds | | bcrypt/DB |
 | `POST /api/v1/auth/admin-login` | ✓ | | | | not configured / wrong creds | | |
 | `GET /api/v1/me` | ✓ | | | | no/bad token | user gone | DB |
@@ -422,7 +394,7 @@ After `MAX_RETRIES` exceeded → `AppError::Internal`.
 - `crate::config::Config`
 - `crate::errors::AppError`
 - `crate::middleware::auth::{generate_token, Claims}`
-- `crate::models::{RegisterRequest, LoginRequest, AuthResponse, User, UserProfile, MessageResponse, SimulationStatusResponse}`
+- `crate::models::{LoginRequest, AuthResponse, User, UserProfile, MessageResponse, SimulationStatusResponse}`
 - `crate::engine_state::SimulatorState`
 - `crate::generators::{run_populate, run_simulate, SimulationConfig}`
 - `actix_web`, `bcrypt`, `chrono`, `uuid`, `aws_sdk_dynamodb`
@@ -439,7 +411,7 @@ use crate::db::DbPool;
 use crate::config::Config;
 use crate::errors::AppError;
 use crate::middleware::auth::{generate_token, Claims};
-use crate::models::{RegisterRequest, LoginRequest, AuthResponse, User, UserProfile,
+use crate::models::{LoginRequest, AuthResponse, User, UserProfile,
                     MessageResponse, SimulationStatusResponse};
 use crate::engine_state::SimulatorState;
 use crate::generators::{run_populate, run_simulate, SimulationConfig};
@@ -448,7 +420,7 @@ use crate::generators::{run_populate, run_simulate, SimulationConfig};
 use actix_web::{web, HttpRequest, HttpMessage, HttpResponse};
 
 // Auth/hashing
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::verify;
 use uuid::Uuid;
 use chrono::Utc;
 use serde::Deserialize;

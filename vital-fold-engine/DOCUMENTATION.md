@@ -90,8 +90,8 @@ Comprehensive documentation suite for the VitalFold Engine project (4000+ lines)
 
 - **Public Endpoints** (no auth required)
   - GET `/health` - Health check
-  - POST `/api/v1/auth/register` - User registration
   - POST `/api/v1/auth/login` - User login
+  - POST `/api/v1/auth/admin-login` - Admin login
   - Complete curl examples for each
   - Request/response formats
   - Validation rules

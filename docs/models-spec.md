@@ -29,7 +29,7 @@ pub mod provider;
 pub mod clinic;
 pub mod appointment;
 pub mod medical_record;
-pub mod simulation;
+pub mod patient_visit;
 ```
 
 ---
@@ -49,12 +49,6 @@ pub struct User {
     #[serde(skip_serializing)]
     pub password_hash: String,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct RegisterRequest {
-    pub email: String,
-    pub password: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -310,69 +304,64 @@ pub struct MedicalRecord {
 
 ---
 
-## `src/models/simulation.rs`
+## `src/models/patient_visit.rs`
 
-Request/response types for the simulation API endpoints.
+Maps to: `vital_fold.patient_visits` (Aurora DSQL) and `patient_visit` (DynamoDB)
+
+Vitals are embedded as columns directly on the visit row (wide-column pattern).
 
 ```rust
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+use sqlx::types::BigDecimal;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use utoipa::ToSchema;
 
-/// POST /simulate request body
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct SimulationRequest {
-    pub plans_per_company: u32,          // Number of insurance plans per company (e.g. 3)
-    pub providers: u32,                  // Total number of providers to generate (e.g. 25)
-    pub patients: u32,                   // Total number of patients to generate (e.g. 200)
-    pub appointments_per_patient: u32,   // Appointments per patient (e.g. 4)
-    pub records_per_appointment: u32,    // Medical records per appointment (e.g. 1)
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PatientVisit {
+    pub patient_visit_id: Uuid,
+    pub patient_id: Uuid,
+    pub clinic_id: Uuid,
+    pub provider_id: Uuid,
+    pub checkin_time: NaiveDateTime,
+    pub checkout_time: Option<NaiveDateTime>,
+    pub provider_seen_time: Option<NaiveDateTime>,
+    pub ekg_usage: bool,
+    pub estimated_copay: BigDecimal,        // DECIMAL(10,2)
+    pub creation_time: NaiveDateTime,
+    pub record_expiration_epoch: i64,
+    // Vitals (embedded — no separate patient_vitals table)
+    pub height: BigDecimal,                 // DECIMAL(5,2) — inches
+    pub weight: BigDecimal,                 // DECIMAL(5,2) — pounds
+    pub blood_pressure: String,             // VARCHAR(20) — "SYS/DIA"
+    pub heart_rate: i32,                    // INT — bpm
+    pub temperature: BigDecimal,            // DECIMAL(4,1) — °F
+    pub oxygen_saturation: BigDecimal,      // DECIMAL(4,1) — %SpO2
+    pub pulse_rate: i32,                    // INT — bpm
 }
+```
 
-/// POST /simulate response (202 Accepted)
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SimulationStartResponse {
-    pub job_id: Uuid,
-    pub status: String,                  // Always "running"
-}
+## `src/engine_state.rs` — SimulationCounts
 
-/// GET /simulate/status response
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SimulationStatusResponse {
-    pub running: bool,
-    pub last_run: Option<DateTime<Utc>>,
-    pub counts: SimulationCounts,
-}
+Row counts from the last completed populate or simulate run.
 
-/// Row counts from the last simulation run
+```rust
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SimulationCounts {
-    pub insurance_companies: u64,
-    pub insurance_plans: u64,
-    pub providers: u64,
-    pub clinics: u64,
-    pub patients: u64,
-    pub emergency_contacts: u64,
-    pub patient_demographics: u64,
-    pub patient_insurance: u64,
-    pub clinic_schedules: u64,
-    pub appointments: u64,
-    pub medical_records: u64,
-    pub dynamo_patient_visits: u64,
-    pub dynamo_patient_vitals: u64,
-}
-
-/// POST /simulate/stop response
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SimulationStopResponse {
-    pub message: String,                 // "stop signal sent"
-}
-
-/// DELETE /simulate/reset response
-#[derive(Debug, Serialize, ToSchema)]
-pub struct SimulationResetResponse {
-    pub message: String,                 // "all tables truncated"
+    // Aurora DSQL fields (set by POST /populate)
+    pub insurance_companies: usize,
+    pub insurance_plans: usize,
+    pub clinics: usize,
+    pub providers: usize,
+    pub patients: usize,
+    pub emergency_contacts: usize,
+    pub patient_demographics: usize,
+    pub patient_insurance: usize,
+    pub clinic_schedules: usize,
+    pub appointments: usize,
+    pub medical_records: usize,
+    pub patient_visits: usize,
+    // DynamoDB fields (set by POST /simulate)
+    pub dynamo_patient_visits: usize,
 }
 ```
 

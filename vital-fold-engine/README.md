@@ -91,17 +91,7 @@ The API will be available at `http://127.0.0.1:8787`
 curl http://127.0.0.1:8787/health
 ```
 
-2. **Register a User**
-```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "password": "SecurePassword123"
-  }'
-```
-
-3. **Login and Get Token**
+2. **Login and Get Token**
 ```bash
 curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
   -H "Content-Type: application/json" \
@@ -113,14 +103,14 @@ curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
 
 Save the `token` from the response.
 
-4. **Start a Simulation**
+3. **Start a Simulation**
 ```bash
 TOKEN="<your-jwt-token>"
 curl -X POST http://127.0.0.1:8787/simulate \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-5. **Check Simulation Status**
+4. **Check Simulation Status**
 ```bash
 curl http://127.0.0.1:8787/simulate/status \
   -H "Authorization: Bearer $TOKEN"
@@ -153,8 +143,8 @@ http://127.0.0.1:8787/api-docs/openapi.json
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/api/v1/auth/register` | Register new user |
 | POST | `/api/v1/auth/login` | Login and get JWT token |
+| POST | `/api/v1/auth/admin-login` | Admin login with env credentials |
 
 #### Protected Endpoints (JWT Required)
 
@@ -366,15 +356,14 @@ Modify simulation configuration in API request or through code:
 
 ```rust
 // In src/generators/mod.rs
-impl Default for SimulationConfig {
-    fn default() -> Self {
-        SimulationConfig {
-            num_providers: 50,        // Increase for more providers
-            num_patients: 100,        // Increase for more patients
-            appointments_per_patient: 3,
-            medical_records_per_patient: 2,
-        }
-    }
+pub struct SimulationConfig {
+    pub plans_per_company:        usize,  // default: 3
+    pub providers:                usize,  // default: 50
+    pub patients:                 usize,  // default: 50_000
+    pub appointments_per_patient: usize,  // default: 2
+    pub records_per_appointment:  usize,  // default: 1
+    pub start_date:               NaiveDate,
+    pub end_date:                 NaiveDate,
 }
 ```
 
@@ -385,7 +374,6 @@ impl Default for SimulationConfig {
 | Operation | Time | Data Volume |
 |-----------|------|-------------|
 | Health Check | <1ms | - |
-| User Registration | 15-25ms | - |
 | Start Simulation | 202ms response | 100-1000s records/second |
 | Get Status | <5ms | - |
 | Full Data Generation | ~30-60s | 100 providers, 100 patients, 300 appointments, 200 records |
@@ -418,7 +406,7 @@ psql -h $DSQL_ENDPOINT -U $DSQL_USER -d $DSQL_DB_NAME
 ### API Errors
 
 **401 Unauthorized**: Invalid or missing JWT token
-- Register/login first to get token
+- Login first to get token
 - Include `Authorization: Bearer <token>` header
 
 **404 Not Found**: Check endpoint path and HTTP method

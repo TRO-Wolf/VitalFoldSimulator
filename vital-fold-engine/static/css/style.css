@@ -275,6 +275,221 @@ nav a.nav-active {
   font-style: italic;
 }
 
+/* Reset progress */
+.reset-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.reset-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.reset-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.reset-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.reset-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* Populate progress */
+.populate-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.populate-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.populate-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.populate-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.populate-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* DynamoDB progress (reset + sync) */
+.dynamo-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.dynamo-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.dynamo-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.dynamo-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.dynamo-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* ===== Populate Calendar ===== */
+
+.populate-calendar {
+  margin: 0.75rem 0 1rem;
+}
+
+.calendar-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.calendar-nav-btn {
+  margin: 0;
+  padding: 0.4rem 0.9rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+
+.calendar-header {
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pico-muted-color);
+  padding: 0.25rem 0 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.calendar-day {
+  text-align: center;
+  padding: 0.45rem 0.2rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.calendar-day--clickable {
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.calendar-day--clickable:hover {
+  background: rgba(52, 152, 219, 0.2);
+  transform: scale(1.08);
+}
+
+.calendar-day--clickable:active {
+  transform: scale(0.95);
+  background: rgba(52, 152, 219, 0.3);
+}
+
+.calendar-day--today {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 0 var(--pico-primary);
+}
+
+.calendar-day--populated {
+  background: rgba(46, 204, 113, 0.2);
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+.calendar-day--selected {
+  background: rgba(52, 152, 219, 0.2);
+  color: #3498db;
+}
+
+.calendar-day--range-end {
+  background: #3498db;
+  color: #fff;
+  font-weight: 600;
+}
+
+.calendar-day--conflict {
+  background: rgba(231, 76, 60, 0.25);
+  color: #e74c3c;
+  font-weight: 600;
+  outline: 2px solid #e74c3c;
+  outline-offset: -1px;
+}
+
+.calendar-day--outside {
+  opacity: 0.2;
+}
+
+/* Date range display below calendar */
+.date-range-display {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.date-range-display label {
+  flex: 1;
+  margin-bottom: 0;
+  padding: 0.25rem;
+  border-radius: 6px;
+  transition: outline 0.15s;
+}
+
+.date-range-display label.date-range-active {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+}
+
+.date-range-display input {
+  margin-bottom: 0;
+}
+
+.date-range-arrow {
+  font-size: 1.25rem;
+  color: var(--pico-muted-color);
+  padding-top: 1.25rem;
+}
+
 /* Article spacing */
 article {
   margin-bottom: 1rem;

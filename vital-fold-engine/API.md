@@ -21,7 +21,7 @@ Protected endpoints require authentication using JWT bearer tokens.
 
 **How to Authenticate:**
 
-1. Register or login to get a JWT token
+1. Login to get a JWT token
 2. Include token in request header:
 
 ```http
@@ -88,64 +88,7 @@ curl http://127.0.0.1:8787/health
 
 ---
 
-### 2. Register User
-
-Create a new user account.
-
-**Endpoint:**
-```
-POST /api/v1/auth/register
-```
-
-**Authentication:** None
-
-**Request Body:**
-```json
-{
-  "email": "user@example.com",
-  "password": "SecurePassword123"
-}
-```
-
-**Request:**
-```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "newuser@example.com",
-    "password": "SecurePassword123"
-  }'
-```
-
-**Response:** `201 Created`
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "newuser@example.com"
-}
-```
-
-**Status Codes:**
-- `201 Created` - User registered successfully
-- `400 Bad Request` - Invalid email or password format
-- `409 Conflict` - Email already registered
-- `500 Internal Server Error` - Database error
-
-**Validation Rules:**
-- Email must be valid email format
-- Email must be unique
-- Password must be at least 8 characters
-- Password is hashed with bcrypt before storage
-
-**Security Notes:**
-- Passwords are never returned
-- Token received can be used immediately
-- Email verification not required (for development)
-
----
-
-### 3. Login User
+### 2. Login User
 
 Authenticate with existing credentials and receive JWT token.
 
@@ -611,7 +554,7 @@ All error responses include:
 |------|------------|-------------|
 | `INVALID_EMAIL` | 400 | Email format is invalid |
 | `INVALID_PASSWORD` | 400 | Password too short or invalid format |
-| `DUPLICATE_EMAIL` | 409 | Email already registered |
+| `SIMULATION_CONFLICT` | 409 | Operation conflicts with running simulation |
 | `INVALID_TOKEN` | 401 | JWT token invalid or expired |
 | `MISSING_TOKEN` | 401 | Authorization header missing |
 | `SIMULATION_RUNNING` | 400 | Cannot start simulation, one already running |

@@ -287,8 +287,8 @@ vital_fold_engine/
 │   ├── health.rs
 │   │   └─ GET /health
 │   ├── auth.rs
-│   │   ├─ POST /api/v1/auth/register
-│   │   └─ POST /api/v1/auth/login
+│   │   ├─ POST /api/v1/auth/login
+│   │   └─ POST /api/v1/auth/admin-login
 │   ├── user.rs
 │   │   └─ GET /api/v1/me
 │   └── simulation.rs
@@ -305,7 +305,6 @@ vital_fold_engine/
 ├── models/
 │   ├── mod.rs
 │   └── user.rs
-│       ├─ RegisterRequest
 │       ├─ LoginRequest
 │       ├─ AuthResponse
 │       ├─ UserProfile
@@ -658,29 +657,25 @@ HMACSHA256(
 ### Authentication Flow
 
 ```
-1. User Registers
-   POST /api/v1/auth/register
-   {email, password} → Hash password with bcrypt → Store in DB → Generate JWT
-
-2. User Logs In
+1. User Logs In
    POST /api/v1/auth/login
    {email, password} → Verify password with bcrypt → Generate JWT → Return to client
 
-3. Client Stores Token
+2. Client Stores Token
    Save token in secure storage (localStorage, cookie, etc.)
 
-4. Client Makes Request
+3. Client Makes Request
    GET /api/v1/me
    Authorization: Bearer <token>
 
-5. Server Validates Token
+4. Server Validates Token
    ├─ Extract token from Authorization header
    ├─ Verify signature with JWT_SECRET
    ├─ Check token expiration
    ├─ Extract claims (user_id, email)
    └─ Add claims to request context
 
-6. Handler Accesses Claims
+5. Handler Accesses Claims
    let claims = req.extensions().get::<Claims>();
    let user_id = claims.sub;
 ```
@@ -722,10 +717,6 @@ pub async fn jwt_validator(
 ### Password Security
 
 ```rust
-// Registration: Hash password
-let password_hash = bcrypt::hash(&password, 12)?;
-// Store password_hash in database
-
 // Login: Verify password
 let is_valid = bcrypt::verify(&provided_password, &stored_hash)?;
 ```

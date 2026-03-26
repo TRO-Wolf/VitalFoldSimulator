@@ -85,8 +85,8 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
 /// Each provider is assigned to 1-2 clinics, working 3-5 days per week.
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
-    let open_time = NaiveTime::from_hms_opt(9, 0, 0).unwrap(); // 9:00 AM
-    let close_time = NaiveTime::from_hms_opt(17, 0, 0).unwrap(); // 5:00 PM
+    let open_time = NaiveTime::from_hms_opt(9, 0, 0).expect("09:00 is a valid time"); // 9:00 AM
+    let close_time = NaiveTime::from_hms_opt(17, 0, 0).expect("17:00 is a valid time"); // 5:00 PM
 
     for provider_id in &ctx.provider_ids {
         let (num_clinics, selected_clinics) = {

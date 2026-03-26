@@ -91,17 +91,7 @@ The API will be available at `http://127.0.0.1:8787`
 curl http://127.0.0.1:8787/health
 ```
 
-2. **Register a User**
-```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "password": "SecurePassword123"
-  }'
-```
-
-3. **Login and Get Token**
+2. **Login and Get Token**
 ```bash
 curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
   -H "Content-Type: application/json" \
@@ -113,14 +103,14 @@ curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
 
 Save the `token` from the response.
 
-4. **Start a Simulation**
+3. **Start a Simulation**
 ```bash
 TOKEN="<your-jwt-token>"
 curl -X POST http://127.0.0.1:8787/simulate \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-5. **Check Simulation Status**
+4. **Check Simulation Status**
 ```bash
 curl http://127.0.0.1:8787/simulate/status \
   -H "Authorization: Bearer $TOKEN"
@@ -153,8 +143,8 @@ http://127.0.0.1:8787/api-docs/openapi.json
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/api/v1/auth/register` | Register new user |
 | POST | `/api/v1/auth/login` | Login and get JWT token |
+| POST | `/api/v1/auth/admin-login` | Admin login with env credentials |
 
 #### Protected Endpoints (JWT Required)
 
