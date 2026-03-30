@@ -59,9 +59,18 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
         let mut appt_dts:     Vec<NaiveDateTime>   = Vec::with_capacity(total);
         let mut reasons:      Vec<String>          = Vec::with_capacity(total);
 
-        for &patient_id in &ctx.patient_ids {
+        for (pat_idx, &patient_id) in ctx.patient_ids.iter().enumerate() {
             for _ in 0..ctx.config.appointments_per_patient {
-                let clinic_id   = ctx.clinic_ids[rng.gen_range(0..ctx.clinic_ids.len())];
+                // 70% chance of home clinic, 30% random — gives geographic realism
+                // while still allowing cross-region visits.
+                let clinic_id = if !ctx.patient_home_clinics.is_empty()
+                    && rng.gen_bool(0.7)
+                {
+                    let home_idx = ctx.patient_home_clinics[pat_idx];
+                    ctx.clinic_ids[home_idx % ctx.clinic_ids.len()]
+                } else {
+                    ctx.clinic_ids[rng.gen_range(0..ctx.clinic_ids.len())]
+                };
                 let provider_id = ctx.provider_ids[rng.gen_range(0..ctx.provider_ids.len())];
                 let day_offset  = rng.gen_range(0..span);
                 let hour        = rng.gen_range(9..17u32);

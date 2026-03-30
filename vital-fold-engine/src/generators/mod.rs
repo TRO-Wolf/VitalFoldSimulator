@@ -125,6 +125,11 @@ pub struct SimulationContext {
     /// Patient data needed for demographics generation: (patient_id, first_name, last_name, dob)
     /// Populated during patient generation, consumed during demographics generation.
     pub patient_data: Vec<(Uuid, String, String, NaiveDate)>,
+
+    /// Maps each patient (by index into patient_ids) to their home clinic index
+    /// into clinic_ids. Used by appointment generation to bias clinic assignment
+    /// toward the patient's geographic area.
+    pub patient_home_clinics: Vec<usize>,
 }
 
 impl SimulationContext {
@@ -141,6 +146,7 @@ impl SimulationContext {
             provider_ids: Vec::new(),
             patient_ids: Vec::new(),
             patient_data: Vec::new(),
+            patient_home_clinics: Vec::new(),
         }
     }
 }

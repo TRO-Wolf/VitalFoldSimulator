@@ -1,476 +1,206 @@
 # VitalFold Engine
 
-> Synthetic healthcare data generation and simulation engine for building high-quality datasets for data pipeline development and analytics.
+> Synthetic healthcare data generation and simulation engine for cardiac clinic data pipelines.
 
 [![Rust](https://img.shields.io/badge/Rust-1.80+-orange.svg)](https://www.rust-lang.org/)
 [![Actix-web](https://img.shields.io/badge/Actix--web-4.x-success.svg)](https://actix.rs/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen.svg)]()
 
-## Overview
+## What is VitalFold Engine?
 
-VitalFold Engine is a high-performance REST API designed to generate synthetic healthcare data based on realistic clinical schema. Built with Rust and Actix-web, it provides:
+VitalFold Engine is a Rust REST API that generates realistic synthetic patient data for **Vital Fold Health LLC**, a multi-region cardiac healthcare company headquartered in Florida. It populates Aurora DSQL (PostgreSQL-compatible) with relational clinical data, syncs visit records to DynamoDB for read-path optimization, and provides a real-time admin dashboard for visualization. The API is secured with JWT authentication and designed for orchestration via Apache Airflow.
 
-- **Scalable Data Generation**: Generate millions of synthetic patient records, appointments, medical records, and insurance relationships
-- **RESTful API**: Complete API control over simulation lifecycle with authentication
-- **Real-time Status Monitoring**: Track simulation progress and data counts in real-time
-- **Aurora DSQL Integration**: Serverless PostgreSQL-compatible database backend
-- **Interactive Documentation**: Built-in Swagger UI for API exploration and testing
-- **Production-Ready**: Comprehensive error handling, logging, and security
+---
 
-## Key Features
+## Three-Phase Data Lifecycle
 
-✅ **Synthetic Healthcare Data Generation**
-- Providers, patients, clinics, appointments, medical records
-- Insurance company and plan associations
-- Emergency contacts and patient demographics
-- Realistic data relationships and referential integrity
+```
+Phase 1: Static Populate          Phase 2: Dynamic Populate         Phase 3: DynamoDB Sync
+POST /populate/static              POST /populate/dynamic             POST /simulate/date-range
+─────────────────────              ──────────────────────             ─────────────────────────
+Aurora DSQL:                       Aurora DSQL:                       DynamoDB:
+ • 7 insurance companies            • Clinic schedules                 • patient_visit table
+ • 21 insurance plans                • Appointments                    • patient_vitals table
+ • 10 clinics (SE US)                • Medical records
+ • 50 providers                      • Patient visits                  Reads Aurora, writes DynamoDB.
+ • 50,000 patients                   • Patient vitals                  No Aurora generation.
+ • Emergency contacts
+ • Demographics                    Date-dependent data for a
+ • Insurance links                 configurable date range.
+                                   Requires Phase 1 first.
+Reference data. Run once.
+```
 
-✅ **REST API Control**
-- Start/stop simulations on-demand
-- Monitor simulation status and data metrics
-- Reset generated data safely
-- User authentication with JWT bearer tokens
+All phases are **fire-and-poll**: POST returns `202 Accepted`, work runs in a background task, poll `GET /simulate/status` until `running == false`.
 
-✅ **High Performance**
-- Asynchronous request handling (Tokio runtime)
-- Connection pooling for database efficiency
-- Concurrent data generation with task-based architecture
-- Response times in milliseconds
-
-✅ **Developer Experience**
-- OpenAPI 3.0 specification with Swagger UI
-- Comprehensive error messages and status codes
-- Structured logging with tracing
-- Configuration via environment variables
-
-✅ **Security**
-- JWT bearer token authentication on protected endpoints
-- Password hashing with bcrypt
-- Input validation and SQL error sanitization
-- HTTPS-ready (TLS support via reverse proxy)
+---
 
 ## Quick Start
 
-### Prerequisites
-
-- **Rust 1.80+** — [Install Rust](https://rustup.rs/)
-- **PostgreSQL 14+** or **Aurora DSQL** — Database backend
-- **Git** — Version control
-
-### Installation
-
-1. **Clone the repository**
 ```bash
-git clone <repository-url>
-cd vital-fold-engine
+git clone https://github.com/your-org/vitalFoldEngine.git
+cd vitalFoldEngine/vital-fold-engine
+cp .env.example .env          # Edit with your DSQL endpoint + JWT secret
+cargo build --release
+cargo run --release            # Starts on http://0.0.0.0:8787
 ```
 
-2. **Configure environment**
 ```bash
-cp .env.example .env
-# Edit .env with your database credentials
-```
+# Health check
+curl http://localhost:8787/health
 
-3. **Run migrations**
-```bash
-cargo sqlx migrate run
-```
-
-4. **Build and run**
-```bash
-cargo run
-```
-
-The API will be available at `http://127.0.0.1:8787`
-
-### First Steps
-
-1. **Health Check** (no auth required)
-```bash
-curl http://127.0.0.1:8787/health
-```
-
-2. **Login and Get Token**
-```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
+# Get a token
+curl -X POST http://localhost:8787/api/v1/auth/admin-login \
   -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "password": "SecurePassword123"
-  }'
+  -d '{"username":"admin","password":"your-admin-password"}'
+
+# Seed reference data
+curl -X POST http://localhost:8787/populate/static \
+  -H "Authorization: Bearer <token>"
 ```
 
-Save the `token` from the response.
+See [QUICKSTART.md](vital-fold-engine/QUICKSTART.md) for detailed setup or [INSTALLATION.md](vital-fold-engine/INSTALLATION.md) for deployment.
 
-3. **Start a Simulation**
-```bash
-TOKEN="<your-jwt-token>"
-curl -X POST http://127.0.0.1:8787/simulate \
-  -H "Authorization: Bearer $TOKEN"
-```
+---
 
-4. **Check Simulation Status**
-```bash
-curl http://127.0.0.1:8787/simulate/status \
-  -H "Authorization: Bearer $TOKEN"
-```
+## API Endpoints (21 total)
 
-## API Documentation
+Interactive docs available at `/swagger-ui/` when the server is running.
 
-### Interactive Documentation
-
-Access the interactive Swagger UI when the server is running:
-
-```
-http://127.0.0.1:8787/swagger-ui/
-```
-
-Click the "Authorize" button to authenticate with your JWT token.
-
-### OpenAPI Specification
-
-The raw OpenAPI 3.0 specification is available at:
-
-```
-http://127.0.0.1:8787/api-docs/openapi.json
-```
-
-### Core Endpoints
-
-#### Public Endpoints
+### Public
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/api/v1/auth/login` | Login and get JWT token |
-| POST | `/api/v1/auth/admin-login` | Admin login with env credentials |
+| POST | `/api/v1/auth/login` | User login (email + password) |
+| POST | `/api/v1/auth/admin-login` | Admin login (env-var credentials) |
 
-#### Protected Endpoints (JWT Required)
+### User (JWT required)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/me` | Get current user profile |
-| POST | `/simulate` | Start data simulation |
-| POST | `/simulate/stop` | Stop running simulation |
-| GET | `/simulate/status` | Get simulation status and metrics |
-| POST | `/simulate/reset` | Reset all generated data |
-
-Full API documentation is available in [API.md](./API.md).
-
-## Architecture
-
-### Core Components
-
-```
-vital-fold-engine/
-├── src/
-│   ├── main.rs              # Application entry point
-│   ├── routes.rs            # Route configuration
-│   ├── db.rs                # Database connection setup
-│   ├── errors.rs            # Error types and handling
-│   ├── config.rs            # Configuration management
-│   ├── engine_state.rs       # Simulation state management
-│   │
-│   ├── handlers/            # Request handlers
-│   │   ├── health.rs
-│   │   ├── auth.rs
-│   │   ├── user.rs
-│   │   └── simulation.rs
-│   │
-│   ├── middleware/          # Request middleware
-│   │   └── auth.rs          # JWT validation
-│   │
-│   ├── generators/          # Data generation logic
-│   │   ├── insurance.rs
-│   │   ├── clinic.rs
-│   │   ├── provider.rs
-│   │   ├── patient.rs
-│   │   ├── appointment.rs
-│   │   └── medical_record.rs
-│   │
-│   ├── models/              # Data types
-│   │   ├── user.rs
-│   │   └── ... (other models)
-│   │
-│   └── db/                  # Database operations
-│       └── ... (query builders)
-│
-├── migrations/              # Database migrations
-├── Cargo.toml              # Dependencies
-└── .env                    # Configuration (local)
-```
-
-### Technology Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Web Framework** | Actix-web 4.x | High-performance async HTTP server |
-| **Runtime** | Tokio | Async task execution |
-| **Database** | Aurora DSQL / PostgreSQL | Serverless data persistence |
-| **ORM/Query** | SQLx | Type-safe SQL queries |
-| **Authentication** | jsonwebtoken + bcrypt | JWT token and password security |
-| **Serialization** | Serde + serde_json | JSON request/response handling |
-| **API Docs** | Utoipa + Swagger UI | OpenAPI generation and exploration |
-| **Logging** | Tracing + tracing-subscriber | Structured request logging |
-| **AWS** | AWS SDK (DSQL, DynamoDB, RDS) | Cloud service integration |
-
-## Configuration
-
-### Environment Variables
-
-Copy `.env.example` to `.env` and configure:
-
-```env
-# Server
-HOST=127.0.0.1
-PORT=8787
-
-# Database (Aurora DSQL)
-DSQL_ENDPOINT=your-cluster.dsql.region.on.aws
-DSQL_CLUSTER_ENDPOINT=your-cluster.dsql.region.on.aws
-DSQL_REGION=us-east-2
-DSQL_DB_NAME=postgres
-DSQL_USER=admin
-DSQL_PORT=5432
-
-# AWS Credentials
-AWS_REGION=us-east-2
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=...
-
-# Database Pool
-DB_POOL_SIZE=10
-
-# JWT
-JWT_SECRET=your-secret-key-must-be-at-least-32-characters-long
-JWT_EXPIRY_HOURS=24
-
-# Logging
-RUST_LOG=vital_fold_engine=info,actix_web=info
-```
-
-For production deployments, see [INSTALLATION.md](./INSTALLATION.md).
-
-## Development
-
-### Local Development Setup
-
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install dependencies
-cargo build
-
-# Run tests
-cargo test
-
-# Run linter
-cargo clippy
-
-# Run with logging
-RUST_LOG=debug cargo run
-```
-
-### Database Development
-
-```bash
-# Run migrations
-cargo sqlx migrate run
-
-# Revert last migration
-cargo sqlx migrate revert
-
-# Create new migration
-cargo sqlx migrate add -r <migration_name>
-```
-
-For detailed development guide, see [DEVELOPMENT.md](./DEVELOPMENT.md).
-
-## Production Deployment
-
-### Render.com Deployment
-
-1. Push code to GitHub repository
-2. Create new Render service connected to GitHub
-3. Set build command: `cargo build --release`
-4. Set start command: `./target/release/vital_fold_engine`
-5. Configure environment variables in Render dashboard
-6. Bind Aurora DSQL instance
-
-### Environment-Specific Configuration
-
-**Development**
-```env
-RUST_LOG=debug
-DB_POOL_SIZE=5
-```
-
-**Production**
-```env
-RUST_LOG=info,actix_web=warn
-DB_POOL_SIZE=20
-JWT_SECRET=<strong-random-string-32chars>
-```
-
-For complete deployment guide, see [INSTALLATION.md](./INSTALLATION.md).
-
-## Security Considerations
-
-### Authentication & Authorization
-
-- **JWT Tokens**: Protected endpoints require valid JWT bearer tokens
-- **Password Security**: Passwords hashed with bcrypt (cost factor 12)
-- **Token Expiry**: Tokens expire after configured duration (default 24 hours)
-- **No Session Sharing**: Each request must include valid token
-
-### Best Practices
-
-- ✅ Always use HTTPS in production
-- ✅ Rotate JWT_SECRET regularly
-- ✅ Use strong passwords for database accounts
-- ✅ Enable IAM authentication for Aurora DSQL
-- ✅ Restrict database firewall to application IPs
-- ✅ Monitor access logs for suspicious activity
-- ✅ Never commit `.env` files with real credentials
-- ✅ Use secrets management (AWS Secrets Manager recommended)
-
-## Simulation Configuration
-
-### Default Data Generation
-
-The simulation generates synthetic data following a realistic healthcare scenario:
-
-- **Insurance Companies**: 7 fixed major providers
-- **Insurance Plans**: Fixed set per company
-- **Clinics**: 10 distribution across the US
-- **Providers**: 50 (configurable)
-- **Patients**: 100 (configurable)
-- **Appointments per Patient**: ~3 (configurable)
-- **Medical Records per Patient**: ~2 (configurable)
-
-### Customizing Data Volume
-
-Modify simulation configuration in API request or through code:
-
-```rust
-// In src/generators/mod.rs
-impl Default for SimulationConfig {
-    fn default() -> Self {
-        SimulationConfig {
-            num_providers: 50,        // Increase for more providers
-            num_patients: 100,        // Increase for more patients
-            appointments_per_patient: 3,
-            medical_records_per_patient: 2,
-        }
-    }
-}
-```
-
-## Performance Characteristics
-
-### Benchmarks (on typical hardware)
-
-| Operation | Time | Data Volume |
-|-----------|------|-------------|
-| Health Check | <1ms | - |
-| User Registration | 15-25ms | - |
-| Start Simulation | 202ms response | 100-1000s records/second |
-| Get Status | <5ms | - |
-| Full Data Generation | ~30-60s | 100 providers, 100 patients, 300 appointments, 200 records |
-
-### Scalability
-
-- **Concurrent Users**: Handles 100+ simultaneous API requests
-- **Data Volume**: Supports millions of synthetic records in database
-- **Simulation Speed**: ~1000+ inserts/second on standard PostgreSQL
-- **Connection Pooling**: Configurable pool size (default 10, recommended 20 for production)
-
-## Troubleshooting
-
-### Server Won't Start
-
-**Error**: `Address already in use`
-```bash
-# Kill process on port 8787
-lsof -ti:8787 | xargs kill -9
-cargo run
-```
-
-**Error**: `Cannot connect to database`
-```bash
-# Check database credentials in .env
-# Verify database is running and accessible
-psql -h $DSQL_ENDPOINT -U $DSQL_USER -d $DSQL_DB_NAME
-```
-
-### API Errors
-
-**401 Unauthorized**: Invalid or missing JWT token
-- Register/login first to get token
-- Include `Authorization: Bearer <token>` header
-
-**404 Not Found**: Check endpoint path and HTTP method
-- Verify against [API.md](./API.md)
-- Use Swagger UI for interactive testing
-
-**500 Internal Server Error**: Check server logs
-```bash
-RUST_LOG=debug cargo run
-```
-
-See [DEVELOPMENT.md](./DEVELOPMENT.md) for more troubleshooting.
-
-## Contributing
-
-### Code Quality
-
-- Run formatter: `cargo fmt`
-- Check linting: `cargo clippy`
-- Run tests: `cargo test`
-- All checks pass before committing
-
-### Reporting Issues
-
-Issues should include:
-- Clear description of problem
-- Steps to reproduce
-- Expected vs actual behavior
-- Relevant log output
-
-## License
-
-This project is licensed under the MIT License - see [LICENSE](LICENSE) file for details.
-
-## Support & Documentation
-
-- **API Documentation**: [API.md](./API.md)
-- **Installation Guide**: [INSTALLATION.md](./INSTALLATION.md)
-- **Development Guide**: [DEVELOPMENT.md](./DEVELOPMENT.md)
-- **Architecture Guide**: [ARCHITECTURE.md](./ARCHITECTURE.md)
-- **Swagger UI**: http://127.0.0.1:8787/swagger-ui/ (when running)
-
-## Roadmap
-
-### Current Release (v0.1.0)
-- ✅ Core data generation engine
-- ✅ REST API with authentication
-- ✅ Simulation lifecycle control
-- ✅ Interactive API documentation
-
-### Future Enhancements
-- Real-time WebSocket updates for simulation progress
-- Advanced filtering and export options
-- Multi-tenant support for different scenarios
-- Integration with data warehousing solutions
-- CLI tool for local data generation
-- Docker containerization and Kubernetes deployment
-
-## Contact & Contributing
-
-For questions, suggestions, or contributions, please open an issue or contact the development team.
+| GET | `/api/v1/me` | Current user profile |
+
+### Population — Phase 1 & 2 (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/populate` | Legacy: run all 13 populate steps at once |
+| POST | `/populate/static` | Phase 1: seed reference data (insurance, clinics, providers, patients) |
+| POST | `/populate/dynamic` | Phase 2: seed date-dependent data (appointments, records, visits) |
+| GET | `/populate/dates` | List dates that have been populated |
+| POST | `/populate/reset-dynamic` | Delete dynamic data only, preserve reference data |
+
+### Simulation — Phase 3 & Control (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/simulate` | Sync today's Aurora visits to DynamoDB |
+| POST | `/simulate/date-range` | Sync Aurora visits to DynamoDB for a date range |
+| POST | `/simulate/stop` | Stop any running background task |
+| GET | `/simulate/status` | Poll run status, counts, and progress |
+| GET | `/simulate/db-counts` | Live record counts from Aurora + DynamoDB |
+| POST | `/simulate/reset` | Delete all Aurora DSQL data |
+| POST | `/simulate/reset-dynamo` | Delete all DynamoDB data |
+
+### Visualization (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/simulate/timelapse` | Start hour-by-hour heatmap animation |
+| GET | `/simulate/heatmap` | Poll per-clinic activity during timelapse |
+| POST | `/simulate/replay` | Read-only heatmap replay (no DynamoDB writes) |
+| POST | `/simulate/replay-reset` | Clear replay state |
+| GET | `/simulate/visitors` | Today's visitors grouped by clinic |
+
+See [API.md](vital-fold-engine/API.md) for full request/response examples with curl commands.
 
 ---
 
-**VitalFold Engine** — Building tomorrow's healthcare analytics with synthetic data today.
+## Frontend Dashboard
+
+The engine serves a built-in admin SPA at the root URL (`/`). No build step required — Preact + HTM loaded via CDN.
+
+**Features:**
+- Login with admin credentials or user email/password
+- Real-time database counts (Aurora + DynamoDB) with refresh
+- Populate controls: configure patient count, provider count, date range
+- Progress bars for populate, reset, and DynamoDB sync operations
+- Clinic activity heatmap with hour-by-hour timelapse animation
+- Per-clinic visitor list with patient names
+
+See [frontend.md](docs/frontend.md) for architecture details.
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | Rust (stable, 2021 edition) |
+| Web Framework | Actix Web 4 |
+| Database | Aurora DSQL (PostgreSQL-compatible, serverless) |
+| Replication | DynamoDB (on-demand, two tables) |
+| Auth | JWT (HS256) + bcrypt |
+| Data Generation | `fake` crate v4 |
+| OpenAPI | utoipa 5 + Swagger UI |
+| Frontend | Preact 10 + HTM 3 + Pico CSS (CDN, no build step) |
+| Deployment | Render.com |
+
+---
+
+## Configuration
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DSQL_CLUSTER_ENDPOINT` | Yes | — | Aurora DSQL hostname |
+| `JWT_SECRET` | Yes | — | HMAC secret (min 32 chars) |
+| `ADMIN_USERNAME` | No | — | Admin login username |
+| `ADMIN_PASSWORD` | No | — | Admin login password |
+| `HOST` | No | `0.0.0.0` | Bind address |
+| `PORT` | No | `8787` | Bind port |
+| `DSQL_REGION` | No | `us-east-1` | AWS region for IAM token signing |
+| `DSQL_DB_NAME` | No | `postgres` | Database name |
+| `DSQL_USER` | No | `admin` | Database user |
+| `DB_POOL_SIZE` | No | `10` | Connection pool size |
+| `JWT_EXPIRY_HOURS` | No | `24` | Token lifetime in hours |
+| `RUST_LOG` | No | `info` | Log level filter |
+
+See [INSTALLATION.md](vital-fold-engine/INSTALLATION.md) for full setup and deployment instructions.
+
+---
+
+## Synthetic Data
+
+The simulator generates cardiac clinic data across 10 clinics in the southeastern US:
+
+- **Clinics:** Charlotte, Asheville (NC) · Atlanta ×2 (GA) · Tallahassee, Miami ×2, Orlando, Jacksonville ×2 (FL)
+- **Insurance:** 7 fictional carriers (Orange Spear, Care Medical, Cade Medical, Multiplied Health, Octi Care, Tatnay, Caymana)
+- **Diagnoses:** 8 cardiac codes (AFib, CAD, Chest Pain, Hypertension, Hyperlipidemia, SOB, Tachycardia, Bradycardia)
+- **Patients:** Geographically distributed — addresses and clinic assignments weighted by metro population
+- **Defaults:** 50,000 patients, 50 providers, 3 plans/company, 2 appointments/patient
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](vital-fold-engine/API.md) | All 21 endpoints with curl examples and response shapes |
+| [Architecture](vital-fold-engine/ARCHITECTURE.md) | System design, data flow, module structure |
+| [Development Guide](vital-fold-engine/DEVELOPMENT.md) | Local dev setup, code style, adding features |
+| [Installation](vital-fold-engine/INSTALLATION.md) | Setup, deployment (Render, Docker), troubleshooting |
+| [Quick Start](vital-fold-engine/QUICKSTART.md) | 5-minute setup guide |
+| [Airflow Integration](docs/airflow-integration.md) | DAG examples for scheduling population + sync |
+| [Frontend Architecture](docs/frontend.md) | SPA components, routing, state management |
+| [DynamoDB Schema](docs/dynamo.md) | Table design, write strategy, TTL, capacity |
+| [Data Models](docs/models-spec.md) | Rust struct definitions for all database tables |
+| [Aurora Schema](docs/health_clinic_schema.sql) | Full DDL for 13 Aurora DSQL tables |
+| [Changelog](CHANGELOG.md) | Release history and change log |
+
+---
+
+## License
+
+MIT

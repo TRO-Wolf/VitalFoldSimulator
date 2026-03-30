@@ -62,7 +62,7 @@ Use these exact strings when populating `medical_record.diagnosis`:
 | Orlando | FL | 1 |
 | Jacksonville | FL | 2 |
 
-**Total: 10 clinics.** The company HQ is in Florida. Florida clinics (5) represent the largest cluster.
+**Total: 10 clinics.** The company HQ is in Florida. Florida clinics (6) represent the largest cluster.
 
 ### Provider Names
 Generate using the `fake` crate — names must be clearly random/fictional (e.g., "Dr. Karev Plinton"). Do not use real physician names.
@@ -87,7 +87,6 @@ Generate using the `fake` crate — names must be clearly random/fictional. Dist
 | Passwords | bcrypt (DEFAULT_COST) |
 | Tokens | jsonwebtoken 9 (HS256, configurable TTL) |
 | Config | `config` crate + dotenvy (environment-based) |
-| Analytics | DuckDB 1.4.4 + Polars 0.53 |
 | OpenAPI / Docs | utoipa 5 + utoipa-swagger-ui 9 |
 | Deployment | Render.com (Docker or native Rust buildpack) |
 
@@ -97,51 +96,68 @@ Generate using the `fake` crate — names must be clearly random/fictional. Dist
 
 ```
 vitalFoldEngine/
-├── Cargo.toml
-├── Dockerfile
-├── render.yaml
-├── .env.example
-├── .gitignore
-├── health_clinic_schema.sql
-├── claude.md
+├── claude.md                         # This file — authoritative spec
 ├── README.md
-├── migrations/
-│   └── 001_init.sql              # Users table DDL for Aurora DSQL
-└── src/
-    ├── main.rs                   # Actix server bootstrap; registers SimulatorState as app_data
-    ├── config.rs                 # Typed config from env vars
-    ├── engine_state.rs           # AtomicBool SimulatorState (running flag + last_run + counts)
-    ├── db/
-    │   └── mod.rs                # sqlx PgPool + DSQL IAM auth with token refresh
-    ├── errors.rs                 # Unified AppError type
-    ├── routes.rs                 # Route registration
-    ├── middleware/
-    │   ├── mod.rs
-    │   └── auth.rs               # generate_token(), validate_token(), jwt_validator()
-    ├── models/
-    │   ├── mod.rs
-    │   ├── user.rs               # User, LoginRequest, AuthResponse, UserProfile
-    │   ├── insurance.rs          # InsuranceCompany, InsurancePlan, PatientInsurance
-    │   ├── patient.rs            # Patient, EmergencyContact, PatientDemographics
-    │   ├── provider.rs           # Provider
-    │   ├── clinic.rs             # Clinic, ClinicSchedule
-    │   ├── appointment.rs        # Appointment
-    │   ├── medical_record.rs     # MedicalRecord
-    │   └── patient_visit.rs      # PatientVisit (with embedded vitals)
-    ├── generators/
-    │   ├── mod.rs                # SimulationContext (holds shared pools/counts)
-    │   ├── insurance.rs
-    │   ├── patient.rs
-    │   ├── provider.rs
-    │   ├── clinic.rs
-    │   ├── appointment.rs
-    │   └── medical_record.rs
-    └── handlers/
-        ├── mod.rs
-        ├── auth.rs               # POST /api/v1/auth/login, /admin-login
-        ├── user.rs               # GET /api/v1/me (protected)
-        ├── simulation.rs         # POST /simulate, POST /simulate/stop, GET /simulate/status
-        └── health.rs             # GET /health
+├── CHANGELOG.md
+├── Sonnet.md                         # Claude Sonnet workflow guidelines
+├── docs/
+│   ├── airflow-integration.md        # Airflow DAG integration guide
+│   ├── models-spec.md                # Rust struct definitions
+│   ├── health_clinic_schema.sql      # Aurora DSQL schema (13 tables)
+│   ├── dynamo.md                     # DynamoDB table schemas
+│   ├── frontend.md                   # Frontend architecture
+│   └── project-origins.md            # Original project prompt
+└── vital-fold-engine/
+    ├── Cargo.toml
+    ├── .env.example
+    ├── migrations/
+    │   ├── 001_init.sql              # Users table DDL for Aurora DSQL
+    │   └── health_clinic_schema.sql  # Full vital_fold schema
+    ├── static/                       # Frontend SPA (Preact + HTM, no build step)
+    │   ├── index.html
+    │   ├── css/style.css
+    │   └── js/
+    │       ├── app.js                # Hash router
+    │       ├── api.js                # Fetch wrapper with JWT injection
+    │       ├── pages/                # login.js, dashboard.js, visitors.js
+    │       └── components/           # nav, heatmap, count-table, populate-form, etc.
+    └── src/
+        ├── main.rs                   # Actix bootstrap, OpenAPI/Swagger setup, static file serving
+        ├── config.rs                 # Typed config from env vars
+        ├── engine_state.rs           # SimulatorState (running flag, counts, progress, timelapse)
+        ├── db/
+        │   └── mod.rs                # sqlx PgPool + DSQL IAM auth with token refresh
+        ├── errors.rs                 # Unified AppError type
+        ├── routes.rs                 # Route registration
+        ├── middleware/
+        │   ├── mod.rs
+        │   └── auth.rs               # generate_token(), validate_token(), jwt_validator()
+        ├── models/
+        │   ├── mod.rs
+        │   ├── user.rs               # User, LoginRequest, AuthResponse, UserProfile
+        │   ├── insurance.rs          # InsuranceCompany, InsurancePlan, PatientInsurance
+        │   ├── patient.rs            # Patient, EmergencyContact, PatientDemographics
+        │   ├── provider.rs           # Provider
+        │   ├── clinic.rs             # Clinic, ClinicSchedule
+        │   ├── appointment.rs        # Appointment
+        │   ├── medical_record.rs     # MedicalRecord
+        │   ├── patient_visit.rs      # PatientVisit (with embedded vitals)
+        │   └── patient_vital.rs      # PatientVital (vital sign measurements)
+        ├── generators/
+        │   ├── mod.rs                # SimulationContext, run_simulate, run_populate, orchestration
+        │   ├── insurance.rs
+        │   ├── patient.rs            # Patient + emergency contact + demographics + insurance
+        │   ├── provider.rs
+        │   ├── clinic.rs             # Clinics + clinic schedules
+        │   ├── appointment.rs        # Appointments + DynamoDB write helpers
+        │   ├── medical_record.rs
+        │   └── visit.rs              # PatientVisit + PatientVital generation (Aurora)
+        └── handlers/
+            ├── mod.rs
+            ├── auth.rs               # POST /api/v1/auth/login, /admin-login
+            ├── user.rs               # GET /api/v1/me (protected)
+            ├── simulation.rs         # All populate, simulate, reset, timelapse, heatmap handlers
+            └── health.rs             # GET /health
 ```
 
 ---
@@ -171,29 +187,75 @@ GET /api/v1/me
 → 200 OK { "id": "<uuid>", "email": "...", "created_at": "..." }
 ```
 
-### Simulation (protected)
+### Population (protected — three-phase data seeding)
+```
+POST /populate
+Body (JSON, all fields optional — uses defaults if omitted):
+{ "plans_per_company": 3, "providers": 50, "patients": 50000,
+  "appointments_per_patient": 2, "records_per_appointment": 1 }
+→ 202 Accepted { "message": "Population started" }
+Note: Legacy endpoint. Runs all 13 population steps in one call.
+
+POST /populate/static
+Body: { "plans_per_company"?: 3, "providers"?: 50, "patients"?: 50000 }
+→ 202 Accepted   (seeds insurance, clinics, providers, patients + related)
+→ 409 Conflict    (static data already exists)
+
+POST /populate/dynamic
+Body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD",
+        "appointments_per_day"?: N, "records_per_appointment"?: N }
+→ 202 Accepted   (seeds schedules, appointments, records, visits, vitals)
+→ 400 Bad Request (no static data, or date range > 90 days)
+
+GET /populate/dates
+→ 200 OK ["2026-03-27", "2026-03-28", ...]   (distinct populated dates)
+
+POST /populate/reset-dynamic
+→ 202 Accepted   (deletes dynamic data only, preserves static reference data)
+```
+
+### Simulation (protected — DynamoDB sync + visualization)
 ```
 POST /simulate
-Body (JSON, all fields optional — omit any to use the default):
-{
-  "plans_per_company": 3,
-  "providers": 50,
-  "patients": 50000,
-  "appointments_per_patient": 2,
-  "records_per_appointment": 1
-}
-Note: insurance_companies and clinics are NOT configurable — they are seeded
-from the fixed domain lists. The request body controls volume only.
-→ 202 Accepted { "message": "Simulation started" }
+→ 202 Accepted   (syncs today's Aurora visits to DynamoDB)
+
+POST /simulate/date-range
+Body: { "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }
+→ 202 Accepted   (syncs Aurora visit data to DynamoDB for date range)
+→ 400 Bad Request (no visits exist for range, or range > 90 days)
 
 POST /simulate/stop
-→ 200 OK { "message": "stop signal sent" }
+→ 200 OK { "message": "Run stopped" }
 
 GET /simulate/status
-→ 200 OK { "running": true|false, "last_run": "<timestamp>", "counts": { ... } }
+→ 200 OK { "running": bool, "last_run": "<timestamp>", "counts": { ... },
+           "reset_progress"?: {...}, "populate_progress"?: {...}, "dynamo_progress"?: {...} }
 
-DELETE /simulate/reset
-→ 200 OK { "message": "all tables truncated" }
+GET /simulate/db-counts
+→ 200 OK { ...SimulationCounts with live Aurora COUNT(*) + DynamoDB scan counts }
+
+POST /simulate/reset
+→ 202 Accepted   (deletes all Aurora DSQL data)
+
+POST /simulate/reset-dynamo
+→ 202 Accepted   (deletes all DynamoDB items from both tables)
+
+POST /simulate/timelapse
+Body: { "window_interval_secs"?: 5 }
+→ 202 Accepted   (starts hour-by-hour heatmap animation for today)
+
+GET /simulate/heatmap
+→ 200 OK { ...per-clinic activity } or { "active": false }
+
+POST /simulate/replay
+Body: { "window_interval_secs"?: 5 }
+→ 202 Accepted   (read-only heatmap replay using Aurora data)
+
+POST /simulate/replay-reset
+→ 200 OK { "message": "Replay state cleared" }
+
+GET /simulate/visitors
+→ 200 OK { "date": "YYYY-MM-DD", "clinics": [{ "clinic_id", "city", "state", "visitors": [...] }] }
 ```
 
 **Simulation Request/Response Models** (in `src/handlers/simulation.rs`):
@@ -210,12 +272,6 @@ pub struct SimulateRequest {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SimulateResponse {
-    pub job_id: Uuid,
-    pub status: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct SimulationStatusResponse {
     pub running: bool,
     pub last_run: Option<DateTime<Utc>>,
@@ -224,6 +280,7 @@ pub struct SimulationStatusResponse {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SimulationCounts {
+    // Aurora DSQL static reference data
     pub insurance_companies: usize,
     pub insurance_plans: usize,
     pub clinics: usize,
@@ -232,9 +289,15 @@ pub struct SimulationCounts {
     pub emergency_contacts: usize,
     pub patient_demographics: usize,
     pub patient_insurance: usize,
+    // Aurora DSQL dynamic (date-dependent) data
     pub clinic_schedules: usize,
     pub appointments: usize,
     pub medical_records: usize,
+    pub patient_visits: usize,
+    pub patient_vitals: usize,
+    // DynamoDB table counts
+    pub dynamo_patient_visits: usize,
+    pub dynamo_patient_vitals: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -247,11 +310,10 @@ pub struct MessageResponse {
 
 | Code | Meaning |
 |---|---|
-| `201 Created` | Successful registration |
 | `202 Accepted` | Simulation job accepted |
 | `200 OK` | Successful login, /me, status, stop |
 | `409 Conflict` | Simulator already running |
-| `400 Bad Request` | Email already registered |
+| `400 Bad Request` | Invalid request body or parameters |
 | `401 Unauthorized` | Wrong credentials or invalid/expired JWT |
 | `404 Not Found` | User row missing |
 | `500 Internal Server Error` | Database or bcrypt failure (message sanitised) |
@@ -275,6 +337,8 @@ Full DDL in `health_clinic_schema.sql`. Table insertion order (FK-safe):
 9. `clinic_schedule` — depends on `clinic` and `provider`
 10. `appointment` — depends on `patient`, `provider`, `clinic`
 11. `medical_record` — depends on `patient`, `provider`, `clinic`
+12. `patient_visit` — depends on `patient`, `clinic`, `provider`
+13. `patient_vitals` — depends on `patient_visit`, `patient`, `clinic`, `provider`
 
 **IMPORTANT:** The schema file `health_clinic_schema.sql` must define tables in this exact order to avoid FK constraint errors during DDL execution.
 
@@ -540,6 +604,8 @@ pub mod provider;
 pub mod clinic;
 pub mod appointment;
 pub mod medical_record;
+pub mod patient_visit;
+pub mod patient_vital;
 
 pub use user::*;
 pub use insurance::*;
@@ -548,15 +614,15 @@ pub use provider::*;
 pub use clinic::*;
 pub use appointment::*;
 pub use medical_record::*;
+pub use patient_visit::*;
+pub use patient_vital::*;
 ```
 
 ### `src/handlers/auth.rs`
 
-**`register`**: check email uniqueness → hash password (bcrypt `DEFAULT_COST`) → insert user → return `201 + AuthResponse`
+**`login`**: lookup by email (missing → `Unauthorized`) → verify bcrypt (fail → `Unauthorized`) → return `200 + AuthResponse`. Returns the same error message for unknown email and wrong password to prevent user enumeration.
 
-**`login`**: lookup by email (missing → `Unauthorized`) → verify bcrypt (fail → `Unauthorized`) → return `200 + AuthResponse`
-
-Both endpoints return the **same** error message for unknown email and wrong password to prevent user enumeration.
+**`admin_login`**: validate `username` and `password` against `ADMIN_USERNAME` / `ADMIN_PASSWORD` environment variables → return `200 + AuthResponse` with a fixed admin UUID. No database user row required — admin credentials are configured at deploy time.
 
 ### `src/handlers/user.rs`
 
@@ -695,9 +761,13 @@ The simulation engine has a toggleable running state stored in an `AtomicBool` (
   - Bradycardia: "Pacemaker evaluation", "Medication review", "Holter monitor"
 
 ### DynamoDB Write Rules
-During `POST /simulate`, Aurora `patient_visits` rows (with embedded vitals) are read and written to DynamoDB:
-- `patient_visit` table: write one item per visit (PK: `patient_id`, SK: `clinic_id#visit_id`). All fields come from the Aurora row — no random generation at write time. Vital attributes (`height`, `weight`, `blood_pressure`, `heart_rate`, `temperature`, `oxygen_saturation`, `pulse_rate`) are embedded directly on the visit item.
-- DynamoDB writes are **fire-and-forget** — log errors with `tracing::error!` but do not fail the simulation run if a DynamoDB write fails.
+During `POST /simulate` or `POST /simulate/date-range`, Aurora `patient_visit` + `patient_vitals` rows are JOINed and written to two separate DynamoDB tables:
+- `patient_visit` table: visit metadata (PK: `patient_id`, SK: `clinic_id#visit_id`) — checkin/checkout times, EKG usage, copay.
+- `patient_vitals` table: vital signs (PK: `patient_id`, SK: `clinic_id#visit_id`) — height, weight, blood_pressure, heart_rate, temperature, oxygen_saturation, pulse_rate.
+- All fields come from the Aurora JOINed row — no random generation at DynamoDB write time.
+- Bounded concurrency: 40 in-flight requests via semaphore per table.
+- Throttle retries: exponential backoff (50ms base, 5 retries) on `ThrottlingException` / `ProvisionedThroughputExceeded`.
+- DynamoDB write errors are logged with `tracing::error!` but do not fail the simulation run.
 
 ## Configuration (Environment Variables)
 
@@ -879,7 +949,7 @@ use tracing::{info, warn, error, instrument};
 
 ## DynamoDB Tables
 
-Schema source: `docs/dynamo.md` in the repo. Single table uses on-demand (PAY_PER_REQUEST) billing mode. Region matches `DSQL_REGION`.
+Schema source: `docs/dynamo.md` in the repo. Both tables use on-demand (PAY_PER_REQUEST) billing mode. Region matches `DSQL_REGION`.
 
 ### `patient_visit`
 
@@ -895,13 +965,23 @@ Schema source: `docs/dynamo.md` in the repo. Single table uses on-demand (PAY_PE
 | `estimated_copay` | Decimal | Estimated patient copay amount |
 | `creation_time` | Number (epoch) | |
 | `record_expiration_epoch` | Number (epoch) | |
+
+### `patient_vitals`
+
+| Attribute | Type | Role |
+|---|---|---|
+| `patient_id` | String (UUID) | Partition key |
+| `clinic_id` | String (`clinic_id#visit_id`) | Sort key |
+| `provider_id` | String (UUID) | |
+| `visit_id` | String (UUID) | Links back to patient_visit |
 | `height` | Decimal | In inches |
 | `weight` | Decimal | In pounds |
 | `blood_pressure` | String | Format: `"120/80"` |
 | `heart_rate` | Decimal | Beats per minute |
 | `temperature` | Decimal | In Fahrenheit |
-| `oxygen_saturation` | Decimal | SpO2 percentage |
-| `pulse_rate` | Decimal | Pulse rate |
+| `oxygen` | Decimal | SpO2 percentage |
+| `creation_time` | Number (epoch) | |
+| `record_expiration_epoch` | Number (epoch) | |
 
 ---
 

@@ -7,6 +7,51 @@
 
 ## [Unreleased] — feature/web (uncommitted)
 
+**Geographic Patient Distribution + Spec Sync + Documentation Overhaul**
+
+### Code Changes
+
+#### Geographic Patient Distribution
+Patient addresses are now geographically correlated with clinic locations instead of
+fully random US addresses. Each patient is assigned a "home" clinic using weighted random
+proportional to approximate metro population (Miami/Atlanta ~14, Asheville/Tallahassee ~2-3).
+Appointment clinic assignment biased 70% toward home clinic, 30% random.
+
+- **patient.rs:** Added `METRO_AREAS` constant with city/state/zip/weight for all 10 clinics;
+  `build_patient_batch()` uses `WeightedIndex` for proportional assignment
+- **appointment.rs:** `generate_appointments()` now checks `patient_home_clinics` for 70/30 bias
+- **mod.rs:** Added `patient_home_clinics: Vec<usize>` to `SimulationContext`
+
+#### DynamoDB Count Fix (prior session)
+Replaced `describe_table().item_count()` (approximate, ~6h stale) with `Scan` using
+`Select::Count` for exact DynamoDB counts in `GET /simulate/db-counts`.
+
+### Spec Synchronization (claude.md)
+- Updated all 21 endpoints in API section
+- Added `patient_visit` and `patient_vitals` tables to schema list
+- Updated `SimulationCounts` to show all 15 fields
+- Fixed Florida clinic count (5→6)
+- Removed DuckDB/Polars from tech stack
+- Removed `SimulateResponse` struct (uses `MessageResponse`)
+- Updated DELETE→POST for `/simulate/reset`
+- Documented admin-login, removed registration references
+- Documented both DynamoDB tables with correct attribute names
+
+### Documentation Overhaul
+- **README.md:** Full rewrite — 21-endpoint table, three-phase lifecycle diagram, frontend
+  dashboard section, documentation index, configuration table
+- **API.md:** Full rewrite — all 21 endpoints with curl examples, request/response JSON, error
+  reference, polling pattern guide
+- **dynamo.md:** Expanded from 30 to 150+ lines — dual table schemas, key design, write strategy,
+  TTL, capacity estimates, reset mechanics
+- **ARCHITECTURE.md:** Added four sections — Three-Phase Data Lifecycle, Frontend Dashboard,
+  Progress Tracking, Visualization Pipeline
+- Deleted duplicate `vital-fold-engine/README.md` and `vital-fold-engine/DOCUMENTATION.md`
+
+---
+
+## Prior Unreleased — feature/web
+
 **Admin-Only API + Aurora-First Visits/Vitals + Date-Range Simulation + Production Hardening**
 
 ### Architectural Changes

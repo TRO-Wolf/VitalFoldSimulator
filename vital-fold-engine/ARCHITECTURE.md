@@ -15,6 +15,11 @@ Comprehensive technical documentation of VitalFold Engine's system design and im
 9. [State Management](#state-management)
 10. [Performance Optimization](#performance-optimization)
 11. [Deployment Architecture](#deployment-architecture)
+12. [Scaling Considerations](#scaling-considerations)
+13. [Three-Phase Data Lifecycle](#three-phase-data-lifecycle)
+14. [Frontend Dashboard](#frontend-dashboard)
+15. [Progress Tracking](#progress-tracking)
+16. [Visualization Pipeline](#visualization-pipeline)
 
 ---
 
@@ -1064,6 +1069,191 @@ Container Runtime
 - Connection pooling (PgBouncer)
 - Caching layer (Redis)
 - Read replicas for analytics
+
+---
+
+## Three-Phase Data Lifecycle
+
+The system uses a three-phase pipeline separating concerns between reference data, date-dependent data, and DynamoDB replication.
+
+### Phase 1: Static Populate (`POST /populate/static`)
+
+Seeds Aurora DSQL with immutable reference data (8 steps):
+1. Insurance companies (7 fixed carriers)
+2. Insurance plans (N per company)
+3. Clinics (10 fixed SE US locations)
+4. Providers (N cardiac specialists)
+5. Patients (N with geographically distributed addresses)
+6. Emergency contacts (1:1 with patients)
+7. Patient demographics (SSN, ethnicity, age)
+8. Patient insurance links (random plan assignment)
+
+Run once. Returns `409 Conflict` if data already exists.
+
+### Phase 2: Dynamic Populate (`POST /populate/dynamic`)
+
+Seeds date-dependent data for a configurable date range (5 steps):
+1. Clinic schedules (provider-clinic-day combinations)
+2. Appointments (N per day across date range)
+3. Medical records (N per appointment with cardiac diagnoses)
+4. Patient visits (checkin/checkout/provider times)
+5. Patient vitals (height, weight, BP, HR, temp, O2)
+
+Can be called multiple times for different date ranges. Validates no overlap with existing dates.
+
+### Phase 3: DynamoDB Sync (`POST /simulate/date-range`)
+
+Reads Aurora `patient_visit` JOIN `patient_vitals` for a date range and writes to two DynamoDB tables. No Aurora data generation. Bounded at 40 concurrent writes per table with exponential backoff on throttling.
+
+### Orchestration
+
+All phases use the fire-and-poll pattern:
+- POST returns `202 Accepted` immediately
+- Background task runs via `tokio::spawn`
+- `AtomicBool` running flag prevents parallel operations
+- Poll `GET /simulate/status` for progress
+
+---
+
+## Frontend Dashboard
+
+The engine serves a single-page application at the root URL (`/`) via `actix_files::Files`.
+
+### Technology
+
+- **Framework:** Preact 10 (3KB React alternative) + HTM 3 (tagged template literals)
+- **CSS:** Pico CSS (semantic HTML styling via CDN)
+- **Bundling:** None — native ES modules, no build step required
+- **Routing:** Hash-based (`#/login`, `#/dashboard`, `#/visitors`)
+
+### Architecture
+
+```
+static/
+├── index.html                  # SPA entry point, CDN imports
+├── css/style.css               # Custom overrides
+└── js/
+    ├── app.js                  # Hash router
+    ├── api.js                  # Fetch wrapper with JWT injection
+    ├── pages/
+    │   ├── login.js            # Login + admin-login forms
+    │   ├── dashboard.js        # Main control panel
+    │   └── visitors.js         # Per-clinic visitor list
+    └── components/
+        ├── nav.js                    # Top navigation
+        ├── status-badge.js           # Running/idle indicator
+        ├── count-table.js            # Aurora + DynamoDB row counts
+        ├── populate-form.js          # Static populate config form
+        ├── dynamic-populate-form.js  # Dynamic populate date range form
+        ├── date-range-form.js        # DynamoDB sync date range form
+        ├── populate-calendar.js      # Visual calendar of populated dates
+        ├── confirm-modal.js          # Reset confirmation dialogs
+        └── heatmap.js                # Per-clinic activity visualization
+```
+
+### Auth Flow
+
+1. User enters credentials on login page
+2. `api.js` sends POST to `/api/v1/auth/admin-login`
+3. JWT stored in `sessionStorage`
+4. All subsequent fetch calls include `Authorization: Bearer <token>` header
+5. 401 response clears token and redirects to login
+
+---
+
+## Progress Tracking
+
+Three progress structures enable real-time UI updates during long-running operations:
+
+### `PopulateProgress`
+
+Published during any populate operation (static, dynamic, or legacy full).
+
+```rust
+pub struct PopulateProgress {
+    pub current_step: String,    // e.g., "Appointments"
+    pub steps_done: usize,       // 0-based step index
+    pub total_steps: usize,      // 8 (static), 5 (dynamic), or 13 (full)
+    pub rows_written: u64,       // Cumulative Aurora rows
+    pub is_complete: bool,
+}
+```
+
+### `ResetProgress`
+
+Published during Aurora data reset (`POST /simulate/reset`).
+
+```rust
+pub struct ResetProgress {
+    pub current_table: String,   // e.g., "patient_vitals"
+    pub tables_done: usize,
+    pub total_tables: usize,     // 13
+    pub rows_deleted: u64,
+    pub is_complete: bool,
+}
+```
+
+### `DynamoProgress`
+
+Published during DynamoDB sync or reset operations.
+
+```rust
+pub struct DynamoProgress {
+    pub operation: String,       // e.g. "Syncing to DynamoDB"
+    pub current_table: String,   // "patient_visit" or "patient_vitals"
+    pub tables_done: usize,
+    pub total_tables: usize,
+    pub items_processed: u64,
+    pub total_items: u64,        // 0 if unknown (e.g. scan-delete)
+    pub is_complete: bool,
+}
+```
+
+All three appear as optional fields in the `GET /simulate/status` response, serialized with `#[serde(skip_serializing_if = "Option::is_none")]`.
+
+---
+
+## Visualization Pipeline
+
+### Timelapse (`POST /simulate/timelapse`)
+
+Animates appointment activity across populated dates:
+
+1. Queries Aurora for distinct appointment dates
+2. For each day, iterates hours 9 AM through 5 PM
+3. For each hour-window, counts appointments per clinic
+4. Publishes `TimelapseState` to `SimulatorState` for UI polling
+5. Sleeps `window_interval_secs` (default: 5) between updates
+6. Auto-populates DynamoDB for the day if not already synced
+
+### Heatmap (`GET /simulate/heatmap`)
+
+Returns the current `TimelapseState`:
+
+```rust
+pub struct TimelapseState {
+    pub simulation_day: String,       // "2026-04-15"
+    pub day_number: usize,            // 1-based
+    pub total_days: usize,
+    pub sim_hour: u32,                // 9-17
+    pub clinics: Vec<ClinicActivity>,
+}
+
+pub struct ClinicActivity {
+    pub clinic_id: String,
+    pub city: String,
+    pub state: String,
+    pub active_patients: usize,
+}
+```
+
+### Replay (`POST /simulate/replay`)
+
+Read-only variant of timelapse — queries Aurora directly without writing to DynamoDB. Same visualization, no side effects.
+
+### Visitors (`GET /simulate/visitors`)
+
+Returns today's patient names grouped by clinic with appointment times. Queries Aurora `appointment` JOIN `patient` for the current date.
 
 ---
 

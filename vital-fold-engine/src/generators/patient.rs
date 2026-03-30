@@ -1,10 +1,39 @@
 use crate::errors::AppError;
 use rand::Rng;
+use rand::distr::weighted::WeightedIndex;
+use rand::distr::Distribution;
 use super::SimulationContext;
 
 /// Aurora DSQL maximum rows per transaction statement.
 /// Keep well under the 3000-row hard limit.
 const DSQL_BATCH_SIZE: usize = 2500;
+
+/// Metro area definitions matching the 10 clinics in CLINIC_DISTRIBUTION (clinic.rs).
+/// Each entry: (city, state_abbr, zip_prefix, population_weight).
+/// Weights approximate relative metro population so larger cities get more patients.
+/// Index order matches CLINIC_DISTRIBUTION exactly.
+const METRO_AREAS: &[(&str, &str, &str, u32)] = &[
+    // idx 0: Charlotte, NC — metro pop ~2.7M
+    ("Charlotte",    "NC", "282", 12),
+    // idx 1: Asheville, NC — metro pop ~0.5M
+    ("Asheville",    "NC", "287",  3),
+    // idx 2: Atlanta, GA (clinic 1) — metro pop ~6.1M
+    ("Atlanta",      "GA", "303", 14),
+    // idx 3: Atlanta, GA (clinic 2)
+    ("Atlanta",      "GA", "303", 14),
+    // idx 4: Tallahassee, FL — metro pop ~0.4M
+    ("Tallahassee",  "FL", "323",  2),
+    // idx 5: Miami, FL (clinic 1) — metro pop ~6.2M
+    ("Miami",        "FL", "331", 14),
+    // idx 6: Miami, FL (clinic 2)
+    ("Miami",        "FL", "331", 14),
+    // idx 7: Orlando, FL — metro pop ~2.7M
+    ("Orlando",      "FL", "328", 12),
+    // idx 8: Jacksonville, FL (clinic 1) — metro pop ~1.7M
+    ("Jacksonville", "FL", "322",  8),
+    // idx 9: Jacksonville, FL (clinic 2)
+    ("Jacksonville", "FL", "322",  8),
+];
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
 /// Format: +1-NXX-NXX-XXXX (18 chars)
@@ -42,6 +71,9 @@ struct PatientBatch {
     pt_phones:        Vec<String>,
     pt_emails:        Vec<String>,
     pt_reg_dates:     Vec<chrono::NaiveDate>,
+
+    /// Index into METRO_AREAS / clinic_ids for each patient's "home" clinic.
+    home_clinic_indices: Vec<usize>,
 }
 
 /// Build all patient + emergency contact row data in memory (no awaits).
@@ -49,7 +81,7 @@ struct PatientBatch {
 fn build_patient_batch(n: usize) -> PatientBatch {
     use fake::Fake;
     use fake::faker::name::en::{FirstName, LastName};
-    use fake::faker::address::en::{StreetName, CityName, StateAbbr, ZipCode};
+    use fake::faker::address::en::StreetName;
     use fake::faker::internet::en::SafeEmail;
     use chrono::Local;
     use rand::rng;
@@ -58,6 +90,10 @@ fn build_patient_batch(n: usize) -> PatientBatch {
     let today = Local::now().naive_local().date();
     let mut rng = rng();
     let relationships = ["Spouse", "Parent", "Sibling", "Child", "Friend"];
+
+    // Build weighted distribution for home clinic assignment.
+    let weights: Vec<u32> = METRO_AREAS.iter().map(|m| m.3).collect();
+    let dist = WeightedIndex::new(&weights).expect("METRO_AREAS weights are all positive");
 
     let mut batch = PatientBatch {
         ec_ids:           Vec::with_capacity(n),
@@ -77,6 +113,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
         pt_phones:        Vec::with_capacity(n),
         pt_emails:        Vec::with_capacity(n),
         pt_reg_dates:     Vec::with_capacity(n),
+        home_clinic_indices: Vec::with_capacity(n),
     };
 
     for _ in 0..n {
@@ -97,10 +134,16 @@ fn build_patient_batch(n: usize) -> PatientBatch {
         batch.pt_last_names.push(LastName().fake());
         let days_back = (18 * 365) + rng.random_range(0..(62 * 365)) as i64;
         batch.pt_dobs.push(today - chrono::TimeDelta::days(days_back));
+
+        // Assign patient to a home metro area proportional to population weight.
+        let metro_idx = dist.sample(&mut rng);
+        let (city, state, zip_prefix, _) = METRO_AREAS[metro_idx];
         batch.pt_streets.push(StreetName().fake());
-        batch.pt_cities.push(CityName().fake());
-        batch.pt_states.push(StateAbbr().fake());
-        batch.pt_zips.push(ZipCode().fake());
+        batch.pt_cities.push(city.to_string());
+        batch.pt_states.push(state.to_string());
+        batch.pt_zips.push(format!("{}{:02}", zip_prefix, rng.random_range(0..100u32)));
+        batch.home_clinic_indices.push(metro_idx);
+
         batch.pt_phones.push(gen_phone(&mut rng));
         batch.pt_emails.push(SafeEmail().fake());
         batch.pt_reg_dates.push(today);
@@ -191,6 +234,7 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
 
         // Populate context for downstream generators.
         ctx.patient_ids.extend_from_slice(&real_patient_ids);
+        ctx.patient_home_clinics.extend_from_slice(&batch.home_clinic_indices[r.clone()]);
         ctx.patient_data.extend(
             real_patient_ids.into_iter()
                 .zip(batch.pt_first_names[r.clone()].iter().cloned())
