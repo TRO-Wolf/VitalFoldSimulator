@@ -23,7 +23,7 @@ pub struct TimelapseState {
     pub day_number: usize,
     /// Total days in the timelapse
     pub total_days: usize,
-    /// Current simulated hour (9..17)
+    /// Current simulated hour (8..17)
     pub sim_hour: u32,
     /// Per-clinic appointment counts for the current hour-window
     pub clinics: Vec<ClinicActivity>,

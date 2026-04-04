@@ -7,8 +7,8 @@ use uuid::Uuid;
 pub struct PatientVital {
     pub patient_visit_id: Uuid,
     pub patient_id: Uuid,
-    pub clinic_id: Uuid,
-    pub provider_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub height: BigDecimal,
     pub weight: BigDecimal,
     pub blood_pressure: String,

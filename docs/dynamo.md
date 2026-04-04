@@ -12,14 +12,14 @@ Stores visit metadata: check-in/check-out times, provider seen time, EKG usage, 
 
 | Attribute | DynamoDB Type | Description |
 |-----------|--------------|-------------|
-| `patient_id` | S (String) | **Partition key** — UUID |
-| `clinic_id` | S (String) | **Sort key** — composite: `{clinic_uuid}#{visit_uuid}` |
-| `provider_id` | S (String) | UUID of the attending provider |
+| `patient_id` | S (String) | **Partition key** — UUID (stringified) |
+| `clinic_id` | S (String) | **Sort key** — composite: `{clinic_bigint}#{patient_visit_uuid}` |
+| `provider_id` | S (String) | BIGINT of the attending provider (stringified) |
 | `checkin_time` | S (String) | ISO 8601 timestamp |
 | `checkout_time` | S (String) | ISO 8601 timestamp |
 | `provider_seen_time` | S (String) | ISO 8601 timestamp |
 | `ekg_usage` | BOOL | Whether an EKG was performed |
-| `estimated_copay` | N (Number) | Decimal dollar amount |
+| `estimated_copay` | N (Number) | Decimal dollar amount ($20-$150 standard, $150-$350 EKG) |
 | `creation_time` | N (Number) | Unix epoch seconds |
 | `record_expiration_epoch` | N (Number) | Unix epoch seconds (creation + 90 days) |
 
@@ -29,16 +29,16 @@ Stores vital sign measurements taken during the visit.
 
 | Attribute | DynamoDB Type | Description |
 |-----------|--------------|-------------|
-| `patient_id` | S (String) | **Partition key** — UUID |
-| `clinic_id` | S (String) | **Sort key** — composite: `{clinic_uuid}#{visit_uuid}` |
-| `provider_id` | S (String) | UUID of the attending provider |
+| `patient_id` | S (String) | **Partition key** — UUID (stringified) |
+| `clinic_id` | S (String) | **Sort key** — composite: `{clinic_bigint}#{patient_visit_uuid}` |
+| `provider_id` | S (String) | BIGINT of the attending provider (stringified) |
 | `visit_id` | S (String) | UUID linking back to `patient_visit` |
 | `height` | N (Number) | Inches (60-78) |
 | `weight` | N (Number) | Pounds (120-220) |
 | `blood_pressure` | S (String) | Format: `"120/80"` |
 | `heart_rate` | N (Number) | Beats per minute (50-120) |
 | `temperature` | N (Number) | Fahrenheit (97.0-99.5) |
-| `oxygen` | N (Number) | SpO2 percentage (95-100) |
+| `oxygen` | N (Number) | SpO2 percentage (95-100) — DynamoDB attribute name is `oxygen` (not `oxygen_saturation`) |
 | `creation_time` | N (Number) | Unix epoch seconds |
 | `record_expiration_epoch` | N (Number) | Unix epoch seconds (creation + 90 days) |
 
@@ -49,9 +49,9 @@ Stores vital sign measurements taken during the visit.
 Both tables share the same key structure:
 
 - **Partition key:** `patient_id` (UUID string) — distributes data evenly across partitions
-- **Sort key:** `clinic_id` — composite value formatted as `{clinic_uuid}#{patient_visit_uuid}`
+- **Sort key:** `clinic_id` — composite value formatted as `{clinic_bigint}#{patient_visit_uuid}` (e.g., `"5#a1b2c3d4-..."`)
 
-The composite sort key ensures uniqueness: a patient can have multiple visits at the same clinic, each distinguished by the visit UUID suffix.
+The composite sort key ensures uniqueness: a patient can have multiple visits at the same clinic, each distinguished by the visit UUID suffix. Note that `clinic_id` in Aurora is a `BIGINT` identity column (not UUID) as of the recent schema refactor — the integer value is stringified into the composite key.
 
 ---
 

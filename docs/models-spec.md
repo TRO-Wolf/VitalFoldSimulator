@@ -200,13 +200,16 @@ use uuid::Uuid;
 use utoipa::ToSchema;
 
 /// Maps to vital_fold.provider
+/// provider_id is a BIGINT identity column (CACHE 1), not a UUID.
+/// license_type is one of: "MD", "DO", "NP" (~30% are Nurse Practitioners)
+/// email format: {first_initial}.{last_name}@example.org (e.g., "j.smith@example.org")
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Provider {
-    pub provider_id: Uuid,
+    pub provider_id: i64,
     pub first_name: String,
     pub last_name: String,
     pub specialty: String,
-    pub license_type: String,
+    pub license_type: String,      // "MD" | "DO" | "NP"
     pub phone_number: String,
     pub email: String,
 }
@@ -226,9 +229,13 @@ use uuid::Uuid;
 use utoipa::ToSchema;
 
 /// Maps to vital_fold.clinic
+/// clinic_id is a BIGINT identity column (CACHE 1), not a UUID.
+/// street_address format: "1234 Elm Blvd, Suite 200" (realistic)
+/// email format: vfhc_{city}{n}@vitalfold.org (e.g., "vfhc_miami1@vitalfold.org")
+/// zip_code uses metro-area prefix + 2 random digits (e.g., Miami = "331xx")
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Clinic {
-    pub clinic_id: Uuid,
+    pub clinic_id: i64,
     pub clinic_name: String,
     pub region: String,
     pub street_address: String,
@@ -243,11 +250,11 @@ pub struct Clinic {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct ClinicSchedule {
     pub schedule_id: Uuid,
-    pub clinic_id: Uuid,
-    pub provider_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub day_of_week: String,             // "Monday", "Tuesday", etc.
-    pub start_time: NaiveTime,
-    pub end_time: NaiveTime,
+    pub start_time: NaiveTime,           // 08:00
+    pub end_time: NaiveTime,             // 17:00
 }
 ```
 
@@ -265,13 +272,17 @@ use uuid::Uuid;
 use utoipa::ToSchema;
 
 /// Maps to vital_fold.appointment
+/// provider_id and clinic_id are BIGINT (not UUID) — identity columns from their respective tables.
+/// appointment_datetime uses 15-minute windows only: :00, :15, :30, :45
+/// Time range: 8:00 AM to 4:45 PM (9 hours × 4 slots = 36 slots per provider per day)
+/// Appointment volume = provider_count × 36 slots/day, distributed by clinic_weights.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Appointment {
     pub appointment_id: Uuid,
     pub patient_id: Uuid,
-    pub provider_id: Uuid,
-    pub clinic_id: Uuid,
-    pub appointment_date: NaiveDateTime,
+    pub provider_id: i64,
+    pub clinic_id: i64,
+    pub appointment_datetime: NaiveDateTime,
     pub reason_for_visit: String,        // Drawn from diagnosis codes list
 }
 ```
@@ -290,12 +301,13 @@ use uuid::Uuid;
 use utoipa::ToSchema;
 
 /// Maps to vital_fold.medical_record
+/// provider_id and clinic_id are BIGINT (not UUID).
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct MedicalRecord {
     pub medical_record_id: Uuid,
     pub patient_id: Uuid,
-    pub provider_id: Uuid,
-    pub clinic_id: Uuid,
+    pub provider_id: i64,
+    pub clinic_id: i64,
     pub record_date: NaiveDateTime,
     pub diagnosis: String,               // Drawn from cardiac diagnosis codes
     pub treatment: String,               // Drawn from cardiac treatment list
@@ -306,9 +318,18 @@ pub struct MedicalRecord {
 
 ## `src/models/patient_visit.rs`
 
-Maps to: `vital_fold.patient_visits` (Aurora DSQL) and `patient_visit` (DynamoDB)
+Maps to: `vital_fold.patient_visit` (visit metadata) and `vital_fold.patient_vitals` (1:1 vitals)
 
-Vitals are embedded as columns directly on the visit row (wide-column pattern).
+Vitals are stored in a **separate** `patient_vitals` table linked by `patient_visit_id` (not embedded).
+
+**Timing rules:**
+- `checkin_time` = `appointment_datetime` minus 5-15 minutes (early arrival)
+- `provider_seen_time` = `appointment_datetime` plus 0-5 minutes
+- `checkout_time` = `appointment_datetime` plus 15-30 minutes
+
+**EKG-based copay:**
+- EKG visit (~20%): `estimated_copay` is $150-$350
+- Standard visit: `estimated_copay` is $20-$150
 
 ```rust
 use chrono::NaiveDateTime;
@@ -316,12 +337,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::types::BigDecimal;
 use uuid::Uuid;
 
+/// Maps to vital_fold.patient_visit — visit metadata only.
+/// appointment_id is a FK back to vital_fold.appointment for explicit linkage.
+/// clinic_id and provider_id are BIGINT (not UUID).
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PatientVisit {
     pub patient_visit_id: Uuid,
+    pub appointment_id: Uuid,               // FK to vital_fold.appointment
     pub patient_id: Uuid,
-    pub clinic_id: Uuid,
-    pub provider_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub checkin_time: NaiveDateTime,
     pub checkout_time: Option<NaiveDateTime>,
     pub provider_seen_time: Option<NaiveDateTime>,
@@ -329,14 +354,46 @@ pub struct PatientVisit {
     pub estimated_copay: BigDecimal,        // DECIMAL(10,2)
     pub creation_time: NaiveDateTime,
     pub record_expiration_epoch: i64,
-    // Vitals (embedded — no separate patient_vitals table)
+}
+
+/// Maps to vital_fold.patient_vitals — 1:1 with patient_visit via patient_visit_id PK.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PatientVital {
+    pub patient_visit_id: Uuid,             // PK + FK to patient_visit
+    pub patient_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub height: BigDecimal,                 // DECIMAL(5,2) — inches
     pub weight: BigDecimal,                 // DECIMAL(5,2) — pounds
     pub blood_pressure: String,             // VARCHAR(20) — "SYS/DIA"
     pub heart_rate: i32,                    // INT — bpm
     pub temperature: BigDecimal,            // DECIMAL(4,1) — °F
     pub oxygen_saturation: BigDecimal,      // DECIMAL(4,1) — %SpO2
-    pub pulse_rate: i32,                    // INT — bpm
+    pub creation_time: NaiveDateTime,
+    pub record_expiration_epoch: i64,
+}
+
+/// Combined JOIN result used by run_simulate / run_date_range_simulate
+/// to read both Aurora tables in one pass before writing to DynamoDB.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PatientVisitWithVitals {
+    pub patient_visit_id: Uuid,
+    pub patient_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
+    pub checkin_time: NaiveDateTime,
+    pub checkout_time: Option<NaiveDateTime>,
+    pub provider_seen_time: Option<NaiveDateTime>,
+    pub ekg_usage: bool,
+    pub estimated_copay: BigDecimal,
+    pub creation_time: NaiveDateTime,
+    pub record_expiration_epoch: i64,
+    pub height: BigDecimal,
+    pub weight: BigDecimal,
+    pub blood_pressure: String,
+    pub heart_rate: i32,
+    pub temperature: BigDecimal,
+    pub oxygen_saturation: BigDecimal,
 }
 ```
 
@@ -347,7 +404,7 @@ Row counts from the last completed populate or simulate run.
 ```rust
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SimulationCounts {
-    // Aurora DSQL fields (set by POST /populate)
+    // Aurora DSQL static reference data
     pub insurance_companies: usize,
     pub insurance_plans: usize,
     pub clinics: usize,
@@ -356,12 +413,15 @@ pub struct SimulationCounts {
     pub emergency_contacts: usize,
     pub patient_demographics: usize,
     pub patient_insurance: usize,
+    // Aurora DSQL dynamic (date-dependent) data
     pub clinic_schedules: usize,
     pub appointments: usize,
     pub medical_records: usize,
     pub patient_visits: usize,
-    // DynamoDB fields (set by POST /simulate)
+    pub patient_vitals: usize,
+    // DynamoDB table counts (set by POST /simulate)
     pub dynamo_patient_visits: usize,
+    pub dynamo_patient_vitals: usize,
 }
 ```
 
@@ -371,7 +431,9 @@ pub struct SimulationCounts {
 
 | SQL Type | Rust Type | Notes |
 |---|---|---|
-| `UUID` | `Uuid` | `uuid::Uuid` |
+| `UUID` | `Uuid` | `uuid::Uuid` — used for patient_id, appointment_id, etc. |
+| `BIGINT` | `i64` | Used for `provider_id`, `clinic_id` — identity columns |
+| `BIGINT GENERATED BY DEFAULT AS IDENTITY (CACHE 1)` | `i64` | Auto-incrementing PK with cache=1 (tight ordering, small tables) |
 | `VARCHAR(N)` / `TEXT` | `String` | |
 | `INT` | `i32` | |
 | `BOOLEAN` | `bool` | |
@@ -381,3 +443,14 @@ pub struct SimulationCounts {
 | `TIME` | `NaiveTime` | `chrono::NaiveTime` |
 | `DECIMAL(10,2)` | `BigDecimal` | `bigdecimal::BigDecimal` |
 | `VARCHAR(N) NULL` | `Option<String>` | Nullable columns → `Option<T>` |
+
+## Patient Insurance Notes
+
+- `coverage_start_date` is a random date within the past 365 days from the simulation run date
+- `coverage_end_date` is `NULL` for ~80% of rows (active policies), populated for ~20% (expired)
+
+## Provider Generation Notes
+
+- **License type distribution:** ~30% Nurse Practitioners (NP), ~70% MD/DO (split evenly)
+- **Clinic assignment:** Providers are assigned to specific clinics proportionally via `clinic_weights` — busier clinics (Miami, Atlanta) get more providers than smaller ones (Asheville, Tallahassee)
+- **Email format:** `{first_initial}.{lastname}@example.org` (e.g., "j.smith@example.org")

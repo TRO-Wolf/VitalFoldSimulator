@@ -170,6 +170,13 @@ async fn main() -> std::io::Result<()> {
     let host = config.host.clone();
     let port = config.port;
 
+    // Resolve static file directory: env var override or compile-time default.
+    // CARGO_MANIFEST_DIR is baked in at compile time, so the binary always knows
+    // where static/ lives even when run from a different working directory.
+    let static_dir = std::env::var("STATIC_DIR")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string());
+    tracing::info!("Serving static files from: {}", static_dir);
+
     // Start the HTTP server
     HttpServer::new(move || {
         // Return a descriptive 400 on JSON parse failures instead of silently
@@ -201,7 +208,7 @@ async fn main() -> std::io::Result<()> {
             // Routes
             .configure(routes::configure)
             // Static frontend files (must come after API routes)
-            .service(actix_files::Files::new("/", "./static").index_file("index.html"))
+            .service(actix_files::Files::new("/", &static_dir).index_file("index.html"))
     })
     .bind((host.as_str(), port))?
     .run()

@@ -7,9 +7,9 @@ use uuid::Uuid;
 pub struct Appointment {
     pub appointment_id: Uuid,
     pub patient_id: Uuid,
-    pub provider_id: Uuid,
-    pub clinic_id: Uuid,
-    pub appointment_date: NaiveDateTime,
+    pub provider_id: i64,
+    pub clinic_id: i64,
+    pub appointment_datetime: NaiveDateTime,
     pub reason_for_visit: String,
 }
 

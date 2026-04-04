@@ -31,6 +31,29 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use aws_sdk_dynamodb::Client as DynamoClient;
 
+/// Number of clinics in the fixed distribution.
+pub const NUM_CLINICS: usize = 10;
+
+/// Default per-clinic weights based on approximate metro population.
+/// Index order matches CLINIC_DISTRIBUTION in clinic.rs:
+///   0: Charlotte, 1: Asheville, 2-3: Atlanta, 4: Tallahassee,
+///   5-6: Miami, 7: Orlando, 8-9: Jacksonville
+pub const DEFAULT_CLINIC_WEIGHTS: [u32; NUM_CLINICS] = [
+    12,  // Charlotte, NC
+     3,  // Asheville, NC
+    14,  // Atlanta, GA (clinic 1)
+    14,  // Atlanta, GA (clinic 2)
+     2,  // Tallahassee, FL
+    14,  // Miami, FL (clinic 1)
+    14,  // Miami, FL (clinic 2)
+    12,  // Orlando, FL
+     8,  // Jacksonville, FL (clinic 1)
+     8,  // Jacksonville, FL (clinic 2)
+];
+
+/// Time slots per provider per day: 9 hours (8 AM–4:45 PM) × 4 quarter-hour windows.
+pub const SLOTS_PER_PROVIDER: usize = 36;
+
 /// Configuration for a populate run.
 /// Controls how many of each entity to generate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,9 +67,6 @@ pub struct SimulationConfig {
     /// Number of patients to generate
     pub patients: usize,
 
-    /// Number of appointments per patient
-    pub appointments_per_patient: usize,
-
     /// Number of medical records per appointment
     pub records_per_appointment: usize,
 
@@ -55,6 +75,11 @@ pub struct SimulationConfig {
 
     /// End date for appointment generation (inclusive)
     pub end_date: NaiveDate,
+
+    /// Per-clinic weights (10 entries). Controls distribution of patients,
+    /// providers, and appointments across clinics. Higher weight = more volume.
+    /// Defaults to DEFAULT_CLINIC_WEIGHTS if not provided.
+    pub clinic_weights: Vec<u32>,
 }
 
 impl Default for SimulationConfig {
@@ -64,10 +89,10 @@ impl Default for SimulationConfig {
             plans_per_company: 3,
             providers: 50,
             patients: 50000,
-            appointments_per_patient: 2,
             records_per_appointment: 1,
             start_date: tomorrow,
             end_date: tomorrow + TimeDelta::days(89),
+            clinic_weights: DEFAULT_CLINIC_WEIGHTS.to_vec(),
         }
     }
 }
@@ -113,11 +138,11 @@ pub struct SimulationContext {
     /// Insurance plan IDs (populated during plan generation)
     pub plan_ids: Vec<Uuid>,
 
-    /// Clinic IDs (populated during clinic generation)
-    pub clinic_ids: Vec<Uuid>,
+    /// Clinic IDs (populated during clinic generation) — BIGINT identity
+    pub clinic_ids: Vec<i64>,
 
-    /// Provider IDs (populated during provider generation)
-    pub provider_ids: Vec<Uuid>,
+    /// Provider IDs (populated during provider generation) — BIGINT identity
+    pub provider_ids: Vec<i64>,
 
     /// Patient IDs (populated during patient generation)
     pub patient_ids: Vec<Uuid>,
@@ -130,6 +155,10 @@ pub struct SimulationContext {
     /// into clinic_ids. Used by appointment generation to bias clinic assignment
     /// toward the patient's geographic area.
     pub patient_home_clinics: Vec<usize>,
+
+    /// Maps each provider (by index into provider_ids) to their primary clinic index.
+    /// Populated during provider generation to distribute providers proportionally.
+    pub provider_clinic_assignments: Vec<usize>,
 }
 
 impl SimulationContext {
@@ -147,6 +176,7 @@ impl SimulationContext {
             patient_ids: Vec::new(),
             patient_data: Vec::new(),
             patient_home_clinics: Vec::new(),
+            provider_clinic_assignments: Vec::new(),
         }
     }
 }
@@ -426,12 +456,12 @@ pub async fn run_populate_dynamic(
     state: &SimulatorState,
     start_date: NaiveDate,
     end_date: NaiveDate,
-    appointments_per_day: usize,
     records_per_appointment: usize,
+    clinic_weights: Vec<u32>,
 ) -> Result<(), AppError> {
     tracing::info!(
-        "Starting dynamic populate ({} to {}, {} appts/day, {} records/appt)",
-        start_date, end_date, appointments_per_day, records_per_appointment
+        "Starting dynamic populate ({} to {}, {} records/appt, provider-based scheduling)",
+        start_date, end_date, records_per_appointment
     );
     let start = Utc::now();
 
@@ -442,13 +472,13 @@ pub async fn run_populate_dynamic(
     .fetch_all(&pool)
     .await?;
 
-    let provider_rows: Vec<(Uuid,)> = sqlx::query_as(
+    let provider_rows: Vec<(i64,)> = sqlx::query_as(
         "SELECT provider_id FROM vital_fold.provider"
     )
     .fetch_all(&pool)
     .await?;
 
-    let clinic_rows: Vec<(Uuid,)> = sqlx::query_as(
+    let clinic_rows: Vec<(i64,)> = sqlx::query_as(
         "SELECT clinic_id FROM vital_fold.clinic"
     )
     .fetch_all(&pool)
@@ -460,9 +490,9 @@ pub async fn run_populate_dynamic(
         ));
     }
 
-    let pt_ids: Vec<Uuid>   = patient_rows.into_iter().map(|(id,)| id).collect();
-    let prov_ids: Vec<Uuid> = provider_rows.into_iter().map(|(id,)| id).collect();
-    let cl_ids: Vec<Uuid>   = clinic_rows.into_iter().map(|(id,)| id).collect();
+    let pt_ids: Vec<Uuid> = patient_rows.into_iter().map(|(id,)| id).collect();
+    let prov_ids: Vec<i64> = provider_rows.into_iter().map(|(id,)| id).collect();
+    let cl_ids: Vec<i64>   = clinic_rows.into_iter().map(|(id,)| id).collect();
 
     tracing::info!(
         "Reference data loaded: {} patients, {} providers, {} clinics",
@@ -486,11 +516,12 @@ pub async fn run_populate_dynamic(
         tracing::info!("Clinic schedules already exist ({}), skipping", counts.clinic_schedules);
     }
 
-    // Step 2: Appointments
+    // Step 2: Appointments (each provider fills 36 slots/day at their clinic)
     publish_progress(state, 1, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
     let appointments = appointment::generate_appointments_by_day(
         &pool, &pt_ids, &prov_ids, &cl_ids,
-        start_date, end_date, appointments_per_day,
+        start_date, end_date,
+        &clinic_weights,
     ).await?;
     let new_appointments = appointments.len();
     counts.appointments += new_appointments;
@@ -540,7 +571,7 @@ pub async fn run_populate_dynamic(
 /// which dates are already populated.
 pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppError> {
     let rows: Vec<(NaiveDate,)> = sqlx::query_as(
-        "SELECT DISTINCT appointment_date::date as d FROM vital_fold.appointment ORDER BY d"
+        "SELECT DISTINCT appointment_datetime::date as d FROM vital_fold.appointment ORDER BY d"
     )
     .fetch_all(pool)
     .await?;
@@ -679,7 +710,7 @@ pub async fn run_simulate(
 /// Row returned when querying clinic metadata for the timelapse.
 #[derive(sqlx::FromRow)]
 struct ClinicMeta {
-    clinic_id: Uuid,
+    clinic_id: i64,
     city: String,
     state: String,
 }
@@ -687,7 +718,7 @@ struct ClinicMeta {
 /// Row returned when counting appointments per clinic for a given date+hour.
 #[derive(sqlx::FromRow)]
 struct ClinicCount {
-    clinic_id: Uuid,
+    clinic_id: i64,
     cnt: i64,
 }
 
@@ -714,7 +745,7 @@ pub async fn run_timelapse(
     .fetch_all(&pool)
     .await?;
 
-    let clinic_map: HashMap<Uuid, (String, String)> = clinics
+    let clinic_map: HashMap<i64, (String, String)> = clinics
         .iter()
         .map(|c| (c.clinic_id, (c.city.clone(), c.state.clone())))
         .collect();
@@ -726,7 +757,7 @@ pub async fn run_timelapse(
 
     // 2. Find the date range of existing appointments.
     let range: Option<(NaiveDate, NaiveDate)> = sqlx::query_as(
-        "SELECT MIN(appointment_date::date), MAX(appointment_date::date) \
+        "SELECT MIN(appointment_datetime::date), MAX(appointment_datetime::date) \
          FROM vital_fold.appointment"
     )
     .fetch_optional(&pool)
@@ -758,8 +789,8 @@ pub async fn run_timelapse(
 
         day_number += 1;
 
-        // 4. Hour-window loop (9..17 = 8 windows).
-        for hour in 9u32..17u32 {
+        // 4. Hour-window loop (8..17 = 9 windows).
+        for hour in 8u32..17u32 {
             if !state.is_running() {
                 break;
             }
@@ -768,8 +799,8 @@ pub async fn run_timelapse(
             let counts: Vec<ClinicCount> = sqlx::query_as(
                 "SELECT clinic_id, COUNT(*) as cnt \
                  FROM vital_fold.appointment \
-                 WHERE appointment_date::date = $1 \
-                   AND EXTRACT(HOUR FROM appointment_date) = $2 \
+                 WHERE appointment_datetime::date = $1 \
+                   AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
                  GROUP BY clinic_id"
             )
             .bind(current_date)
@@ -777,7 +808,7 @@ pub async fn run_timelapse(
             .fetch_all(&pool)
             .await?;
 
-            let count_map: HashMap<Uuid, i64> = counts
+            let count_map: HashMap<i64, i64> = counts
                 .into_iter()
                 .map(|c| (c.clinic_id, c.cnt))
                 .collect();
@@ -835,7 +866,7 @@ async fn animate_single_day(
 ) -> Result<(), AppError> {
     let window_sleep = tokio::time::Duration::from_secs(window_interval_secs);
 
-    for hour in 9u32..17u32 {
+    for hour in 8u32..17u32 {
         if !state.is_running() {
             tracing::info!("Heatmap stopped by user at hour {}", hour);
             break;
@@ -844,8 +875,8 @@ async fn animate_single_day(
         let counts: Vec<ClinicCount> = sqlx::query_as(
             "SELECT clinic_id, COUNT(*) as cnt \
              FROM vital_fold.appointment \
-             WHERE appointment_date::date = $1 \
-               AND EXTRACT(HOUR FROM appointment_date) = $2 \
+             WHERE appointment_datetime::date = $1 \
+               AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
              GROUP BY clinic_id"
         )
         .bind(date)
@@ -853,7 +884,7 @@ async fn animate_single_day(
         .fetch_all(pool)
         .await?;
 
-        let count_map: HashMap<Uuid, i64> = counts
+        let count_map: HashMap<i64, i64> = counts
             .into_iter()
             .map(|c| (c.clinic_id, c.cnt))
             .collect();

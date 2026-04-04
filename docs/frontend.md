@@ -132,7 +132,7 @@ Right-aligned monospace numbers with `toLocaleString()` comma formatting.
 
 | Prop | Type | Description |
 |------|------|-------------|
-| `config` | object | `{ providers, patients, plans_per_company, appointments_per_patient, records_per_appointment }` |
+| `config` | object | `{ providers, patients, plans_per_company, clinic_weights }` |
 | `onChange` | function | Receives updated config object |
 | `disabled` | boolean | True when simulation is running |
 
@@ -142,7 +142,7 @@ All `type="number"` inputs with `min="1"`. Uses Pico's `<div class="grid">` for 
 
 | Prop | Type | Description |
 |------|------|-------------|
-| `config` | object | `{ start_date, end_date, appointments_per_patient, records_per_appointment }` |
+| `config` | object | `{ start_date, end_date, records_per_appointment, clinic_weights }` |
 | `onChange` | function | Receives updated config object |
 | `disabled` | boolean | True when simulation is running |
 | `onSubmit` | function | Triggers date-range simulation |
@@ -199,7 +199,8 @@ Reset buttons always require confirmation modal.
 Defaults to tomorrow. Calls `POST /simulate/date-range`.
 
 **4. Populate Configuration** — providers (50), patients (50000), plans_per_company (3),
-appointments_per_patient (2), records_per_appointment (1).
+records_per_appointment (1), clinic_weights (per-clinic distribution).
+Appointment volume is provider-driven: 36 slots/day per provider.
 
 **5. Data Counts** — Two sub-cards:
 - Aurora DSQL: 12 fields (insurance companies through patient visits)
@@ -243,8 +244,8 @@ Count fields are flattened via `#[serde(flatten)]`:
   "plans_per_company": 3,
   "providers": 50,
   "patients": 50000,
-  "appointments_per_patient": 2,
-  "records_per_appointment": 1
+  "records_per_appointment": 1,
+  "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
 }
 ```
 

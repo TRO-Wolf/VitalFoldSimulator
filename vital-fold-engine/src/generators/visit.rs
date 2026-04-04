@@ -21,9 +21,9 @@ const DSQL_BATCH_SIZE: usize = 2500;
 struct AppointmentRow {
     appointment_id: Uuid,
     patient_id: Uuid,
-    clinic_id: Uuid,
-    provider_id: Uuid,
-    appointment_date: NaiveDateTime,
+    clinic_id: i64,
+    provider_id: i64,
+    appointment_datetime: NaiveDateTime,
 }
 
 /// Generate one patient_visit row and one patient_vitals row per appointment.
@@ -31,11 +31,11 @@ struct AppointmentRow {
 /// Queries all appointments, generates visit + vitals data, and bulk-inserts into
 /// vital_fold.patient_visit (with RETURNING to capture UUIDs) then vital_fold.patient_vitals.
 pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
 
     // Query all appointments from Aurora.
     let appointments: Vec<AppointmentRow> = sqlx::query_as(
-        "SELECT appointment_id, patient_id, clinic_id, provider_id, appointment_date \
+        "SELECT appointment_id, patient_id, clinic_id, provider_id, appointment_datetime \
          FROM vital_fold.appointment"
     )
     .fetch_all(&ctx.pool)
@@ -49,19 +49,20 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 
     // Build all visit + vital data synchronously — rng dropped before any await.
     let (
-        patient_ids, clinic_ids, provider_ids,
+        appointment_ids, patient_ids, clinic_ids, provider_ids,
         checkin_times, checkout_times, provider_seen_times,
         ekg_usages, copays, creation_times, expiry_epochs,
         heights, weights, blood_pressures, heart_rates,
         temperatures, oxygen_saturations,
     ) = {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let now = Utc::now().naive_utc();
         let expiry = (Utc::now() + TimeDelta::days(90)).timestamp();
 
+        let mut appointment_ids:     Vec<Uuid>          = Vec::with_capacity(total);
         let mut patient_ids:         Vec<Uuid>          = Vec::with_capacity(total);
-        let mut clinic_ids:          Vec<Uuid>          = Vec::with_capacity(total);
-        let mut provider_ids:        Vec<Uuid>          = Vec::with_capacity(total);
+        let mut clinic_ids:          Vec<i64>           = Vec::with_capacity(total);
+        let mut provider_ids:        Vec<i64>           = Vec::with_capacity(total);
         let mut checkin_times:       Vec<NaiveDateTime>  = Vec::with_capacity(total);
         let mut checkout_times:      Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
         let mut provider_seen_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
@@ -77,33 +78,44 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
         let mut oxygen_saturations:  Vec<f64>           = Vec::with_capacity(total);
 
         for appt in &appointments {
-            let checkout_offset      = rng.gen_range(30..120i64);
-            let provider_seen_offset = rng.gen_range(5..30i64);
+            appointment_ids.push(appt.appointment_id);
+            // Checkin: 5–15 min before scheduled appointment
+            let early_arrival        = rng.random_range(5..=15i64);
+            // Provider seen: 0–5 min after scheduled time
+            let provider_seen_offset = rng.random_range(0..=5i64);
+            // Checkout: 15–30 min after scheduled time
+            let checkout_offset      = rng.random_range(15..=30i64);
 
             patient_ids.push(appt.patient_id);
             clinic_ids.push(appt.clinic_id);
             provider_ids.push(appt.provider_id);
-            checkin_times.push(appt.appointment_date);
-            checkout_times.push(Some(appt.appointment_date + TimeDelta::minutes(checkout_offset)));
-            provider_seen_times.push(Some(appt.appointment_date + TimeDelta::minutes(provider_seen_offset)));
-            ekg_usages.push(rng.gen_bool(0.2));
-            copays.push(rng.gen_range(20..150));
+            checkin_times.push(appt.appointment_datetime - TimeDelta::minutes(early_arrival));
+            checkout_times.push(Some(appt.appointment_datetime + TimeDelta::minutes(checkout_offset)));
+            provider_seen_times.push(Some(appt.appointment_datetime + TimeDelta::minutes(provider_seen_offset)));
+            let ekg = rng.random_bool(0.2);
+            let copay = if ekg {
+                rng.random_range(150..350) // EKG visit: higher copay
+            } else {
+                rng.random_range(20..150)  // Standard visit
+            };
+            ekg_usages.push(ekg);
+            copays.push(copay);
             creation_times.push(now);
             expiry_epochs.push(expiry);
 
             // Vitals
-            heights.push(rng.gen_range(60.0..78.0f64));
-            weights.push(rng.gen_range(120.0..220.0f64));
-            let sys = rng.gen_range(100..160u32);
-            let dia = rng.gen_range(60..100u32);
+            heights.push(rng.random_range(60.0..78.0f64));
+            weights.push(rng.random_range(120.0..220.0f64));
+            let sys = rng.random_range(100..160u32);
+            let dia = rng.random_range(60..100u32);
             blood_pressures.push(format!("{}/{}", sys, dia));
-            heart_rates.push(rng.gen_range(50..120i32));
-            temperatures.push(97.0 + (rng.gen::<f64>() * 2.5));
-            oxygen_saturations.push(rng.gen_range(95.0..100.0f64));
+            heart_rates.push(rng.random_range(50..120i32));
+            temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
+            oxygen_saturations.push(rng.random_range(95.0..100.0f64));
         }
 
         (
-            patient_ids, clinic_ids, provider_ids,
+            appointment_ids, patient_ids, clinic_ids, provider_ids,
             checkin_times, checkout_times, provider_seen_times,
             ekg_usages, copays, creation_times, expiry_epochs,
             heights, weights, blood_pressures, heart_rates,
@@ -120,13 +132,14 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "INSERT INTO vital_fold.patient_visit \
-             (patient_id, clinic_id, provider_id, checkin_time, checkout_time, \
+             (appointment_id, patient_id, clinic_id, provider_id, checkin_time, checkout_time, \
               provider_seen_time, ekg_usage, estimated_copay, creation_time, record_expiration_epoch) \
              SELECT * FROM UNNEST(\
-                $1::uuid[], $2::uuid[], $3::uuid[], $4::timestamp[], $5::timestamp[], \
-                $6::timestamp[], $7::boolean[], $8::numeric[], $9::timestamp[], $10::bigint[]) \
+                $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[], $5::timestamp[], $6::timestamp[], \
+                $7::timestamp[], $8::boolean[], $9::numeric[], $10::timestamp[], $11::bigint[]) \
              RETURNING patient_visit_id"
         )
+        .bind(&appointment_ids[r.clone()])
         .bind(&patient_ids[r.clone()])
         .bind(&clinic_ids[r.clone()])
         .bind(&provider_ids[r.clone()])
@@ -155,7 +168,7 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
               height, weight, blood_pressure, heart_rate, temperature, oxygen_saturation, \
               creation_time, record_expiration_epoch) \
              SELECT * FROM UNNEST(\
-                $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], \
+                $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[], \
                 $5::numeric[], $6::numeric[], $7::text[], $8::int[], $9::numeric[], $10::numeric[], \
                 $11::timestamp[], $12::bigint[])"
         )
@@ -190,27 +203,28 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 /// Returns (visit_count, vitals_count).
 pub async fn generate_visits_for_appointments(
     pool: &DbPool,
-    appointments: &[(Uuid, Uuid, Uuid, Uuid, NaiveDateTime)],
+    appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],
 ) -> Result<(usize, usize), AppError> {
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
 
     let total = appointments.len();
     if total == 0 { return Ok((0, 0)); }
 
     let (
-        patient_ids, clinic_ids, provider_ids,
+        appointment_ids, patient_ids, clinic_ids, provider_ids,
         checkin_times, checkout_times, provider_seen_times,
         ekg_usages, copays, creation_times, expiry_epochs,
         heights, weights, blood_pressures, heart_rates,
         temperatures, oxygen_saturations,
     ) = {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let now = Utc::now().naive_utc();
         let expiry = (Utc::now() + TimeDelta::days(90)).timestamp();
 
+        let mut appointment_ids:     Vec<Uuid>                 = Vec::with_capacity(total);
         let mut patient_ids:         Vec<Uuid>                 = Vec::with_capacity(total);
-        let mut clinic_ids:          Vec<Uuid>                 = Vec::with_capacity(total);
-        let mut provider_ids:        Vec<Uuid>                 = Vec::with_capacity(total);
+        let mut clinic_ids:          Vec<i64>                  = Vec::with_capacity(total);
+        let mut provider_ids:        Vec<i64>                  = Vec::with_capacity(total);
         let mut checkin_times:       Vec<NaiveDateTime>         = Vec::with_capacity(total);
         let mut checkout_times:      Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
         let mut provider_seen_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
@@ -226,34 +240,45 @@ pub async fn generate_visits_for_appointments(
         let mut oxygen_saturations:  Vec<f64>                  = Vec::with_capacity(total);
 
         // appointments tuple: (appt_id, patient_id, clinic_id, provider_id, appt_dt)
-        for &(_appt_id, patient_id, clinic_id, provider_id, appt_dt) in appointments {
-            let checkout_offset      = rng.gen_range(30..120i64);
-            let provider_seen_offset = rng.gen_range(5..30i64);
+        for &(appt_id, patient_id, clinic_id, provider_id, appt_dt) in appointments {
+            appointment_ids.push(appt_id);
+            // Checkin: 5–15 min before scheduled appointment
+            let early_arrival        = rng.random_range(5..=15i64);
+            // Provider seen: 0–5 min after scheduled time
+            let provider_seen_offset = rng.random_range(0..=5i64);
+            // Checkout: 15–30 min after scheduled time
+            let checkout_offset      = rng.random_range(15..=30i64);
 
             patient_ids.push(patient_id);
             clinic_ids.push(clinic_id);
             provider_ids.push(provider_id);
-            checkin_times.push(appt_dt);
+            checkin_times.push(appt_dt - TimeDelta::minutes(early_arrival));
             checkout_times.push(Some(appt_dt + TimeDelta::minutes(checkout_offset)));
             provider_seen_times.push(Some(appt_dt + TimeDelta::minutes(provider_seen_offset)));
-            ekg_usages.push(rng.gen_bool(0.2));
-            copays.push(rng.gen_range(20..150));
+            let ekg = rng.random_bool(0.2);
+            let copay = if ekg {
+                rng.random_range(150..350) // EKG visit: higher copay
+            } else {
+                rng.random_range(20..150)  // Standard visit
+            };
+            ekg_usages.push(ekg);
+            copays.push(copay);
             creation_times.push(now);
             expiry_epochs.push(expiry);
 
             // Vitals
-            heights.push(rng.gen_range(60.0..78.0f64));
-            weights.push(rng.gen_range(120.0..220.0f64));
-            let sys = rng.gen_range(100..160u32);
-            let dia = rng.gen_range(60..100u32);
+            heights.push(rng.random_range(60.0..78.0f64));
+            weights.push(rng.random_range(120.0..220.0f64));
+            let sys = rng.random_range(100..160u32);
+            let dia = rng.random_range(60..100u32);
             blood_pressures.push(format!("{}/{}", sys, dia));
-            heart_rates.push(rng.gen_range(50..120i32));
-            temperatures.push(97.0 + (rng.gen::<f64>() * 2.5));
-            oxygen_saturations.push(rng.gen_range(95.0..100.0f64));
+            heart_rates.push(rng.random_range(50..120i32));
+            temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
+            oxygen_saturations.push(rng.random_range(95.0..100.0f64));
         }
 
         (
-            patient_ids, clinic_ids, provider_ids,
+            appointment_ids, patient_ids, clinic_ids, provider_ids,
             checkin_times, checkout_times, provider_seen_times,
             ekg_usages, copays, creation_times, expiry_epochs,
             heights, weights, blood_pressures, heart_rates,
@@ -271,13 +296,14 @@ pub async fn generate_visits_for_appointments(
 
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "INSERT INTO vital_fold.patient_visit \
-             (patient_id, clinic_id, provider_id, checkin_time, checkout_time, \
+             (appointment_id, patient_id, clinic_id, provider_id, checkin_time, checkout_time, \
               provider_seen_time, ekg_usage, estimated_copay, creation_time, record_expiration_epoch) \
              SELECT * FROM UNNEST(\
-                $1::uuid[], $2::uuid[], $3::uuid[], $4::timestamp[], $5::timestamp[], \
-                $6::timestamp[], $7::boolean[], $8::numeric[], $9::timestamp[], $10::bigint[]) \
+                $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[], $5::timestamp[], $6::timestamp[], \
+                $7::timestamp[], $8::boolean[], $9::numeric[], $10::timestamp[], $11::bigint[]) \
              RETURNING patient_visit_id"
         )
+        .bind(&appointment_ids[r.clone()])
         .bind(&patient_ids[r.clone()])
         .bind(&clinic_ids[r.clone()])
         .bind(&provider_ids[r.clone()])
@@ -308,7 +334,7 @@ pub async fn generate_visits_for_appointments(
               height, weight, blood_pressure, heart_rate, temperature, oxygen_saturation, \
               creation_time, record_expiration_epoch) \
              SELECT * FROM UNNEST(\
-                $1::uuid[], $2::uuid[], $3::uuid[], $4::uuid[], \
+                $1::uuid[], $2::uuid[], $3::bigint[], $4::bigint[], \
                 $5::numeric[], $6::numeric[], $7::text[], $8::int[], $9::numeric[], $10::numeric[], \
                 $11::timestamp[], $12::bigint[])"
         )

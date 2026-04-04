@@ -44,11 +44,15 @@ export function DashboardPage() {
   const [dbCounts, setDbCounts] = useState(null);
   const [dbCountsLoading, setDbCountsLoading] = useState(false);
 
+  // Default per-clinic weights (matches DEFAULT_CLINIC_WEIGHTS in Rust)
+  const DEFAULT_WEIGHTS = [12, 3, 14, 14, 2, 14, 14, 12, 8, 8];
+
   // Static populate config (Step 1)
   const [staticConfig, setStaticConfig] = useState({
     providers: 50,
     patients: 50000,
     plans_per_company: 3,
+    clinic_weights: [...DEFAULT_WEIGHTS],
   });
 
   // Dynamic populate config (Step 2)
@@ -60,8 +64,8 @@ export function DashboardPage() {
     return {
       start_date: tomorrow.toISOString().split('T')[0],
       end_date: ninetyOut.toISOString().split('T')[0],
-      appointments_per_day: 100,
       records_per_appointment: 1,
+      clinic_weights: [...DEFAULT_WEIGHTS],
     };
   });
 
@@ -204,6 +208,23 @@ export function DashboardPage() {
           fetchPopulatedDates();
         },
       });
+    } else if (type === 'init-db') {
+      setConfirmAction({
+        title: 'Initialize Database Schema',
+        message: 'This will DROP and recreate the entire vital_fold schema. All simulation data (Aurora + in-memory counts) will be lost. The public.users auth table is preserved. Continue?',
+        action: async () => {
+          setActionLoading('init-db');
+          try {
+            await api.post('/admin/init-db');
+            await fetchStatus();
+            fetchPopulatedDates();
+          } catch (err) {
+            setError(err.message);
+          } finally {
+            setActionLoading('');
+          }
+        },
+      });
     }
   }
 
@@ -269,6 +290,11 @@ export function DashboardPage() {
             <button class="outline btn-danger" onclick=${() => requestReset('dynamo')}
                     disabled=${running}>
               Reset DynamoDB
+            </button>
+            <button class="outline btn-danger" onclick=${() => requestReset('init-db')}
+                    disabled=${running}
+                    aria-busy=${actionLoading === 'init-db'}>
+              Init Database
             </button>
           </div>
         </article>

@@ -71,7 +71,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     // Simulation routes (Phase 2): DynamoDB day-of writes + control endpoints
     cfg.service(
         web::scope("/simulate")
-            .wrap(auth_middleware)
+            .wrap(auth_middleware.clone())
             .route("",              web::post().to(simulation::start_simulate))
             .route("/stop",         web::post().to(simulation::stop_simulation))
             .route("/status",       web::get().to(simulation::get_status))
@@ -84,6 +84,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/date-range",  web::post().to(simulation::start_date_range_simulate))
             .route("/replay",      web::post().to(simulation::start_replay))
             .route("/replay-reset",web::post().to(simulation::reset_replay))
+    );
+
+    // Admin routes: schema management
+    cfg.service(
+        web::scope("/admin")
+            .wrap(auth_middleware)
+            .route("/init-db", web::post().to(simulation::init_database))
     );
 }
 

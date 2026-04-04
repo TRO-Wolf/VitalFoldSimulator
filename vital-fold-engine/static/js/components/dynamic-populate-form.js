@@ -5,9 +5,27 @@ import { PopulateCalendar } from './populate-calendar.js';
 
 const html = htm.bind(h);
 
+const CLINIC_LABELS = [
+  'Charlotte, NC', 'Asheville, NC',
+  'Atlanta 1, GA', 'Atlanta 2, GA',
+  'Tallahassee, FL',
+  'Miami 1, FL', 'Miami 2, FL',
+  'Orlando, FL',
+  'Jacksonville 1, FL', 'Jacksonville 2, FL',
+];
+
 export function DynamicPopulateForm({ config, onChange, disabled, onSubmit, loading, populatedDates, hasStaticData }) {
   // Track which date the next click sets: 'start' or 'end'
   const [selectingDate, setSelectingDate] = useState('start');
+
+  function handleWeightInput(idx, value) {
+    const num = parseInt(value, 10);
+    if (!isNaN(num) && num > 0) {
+      const weights = [...config.clinic_weights];
+      weights[idx] = num;
+      onChange({ ...config, clinic_weights: weights });
+    }
+  }
 
   function handleDateInput(key, value) {
     onChange({ ...config, [key]: value });
@@ -103,19 +121,33 @@ export function DynamicPopulateForm({ config, onChange, disabled, onSubmit, load
 
       <div class="grid">
         <label>
-          Appts / Day
-          <input type="number" min="1"
-                 value=${config.appointments_per_day}
-                 onInput=${e => handleNumberInput('appointments_per_day', e.target.value)}
-                 disabled=${formDisabled} />
-        </label>
-        <label>
           Records / Appt
           <input type="number" min="1"
                  value=${config.records_per_appointment}
                  onInput=${e => handleNumberInput('records_per_appointment', e.target.value)}
                  disabled=${formDisabled} />
         </label>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--pico-muted-color); margin-top: 0.25rem;">
+        Appointments are auto-calculated: 36 slots/day per provider, distributed by clinic weight.
+      </p>
+
+      <h6 style="margin: 1rem 0 0.25rem; font-size: 0.85rem; color: var(--pico-muted-color);">
+        Clinic Weights
+      </h6>
+      <p style="font-size: 0.8rem; color: var(--pico-muted-color); margin-bottom: 0.5rem;">
+        Higher weight = more appointments at that clinic per day.
+      </p>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem 1rem;">
+        ${config.clinic_weights && config.clinic_weights.map((w, i) => html`
+          <label key=${i} style="font-size: 0.85rem; margin-bottom: 0.25rem;">
+            ${CLINIC_LABELS[i]}
+            <input type="number" min="1" style="padding: 0.3rem 0.5rem;"
+                   value=${w}
+                   onInput=${e => handleWeightInput(i, e.target.value)}
+                   disabled=${formDisabled} />
+          </label>
+        `)}
       </div>
 
       ${hasOverlap && html`

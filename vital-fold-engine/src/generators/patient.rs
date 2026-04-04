@@ -12,7 +12,7 @@ const DSQL_BATCH_SIZE: usize = 2500;
 /// Each entry: (city, state_abbr, zip_prefix, population_weight).
 /// Weights approximate relative metro population so larger cities get more patients.
 /// Index order matches CLINIC_DISTRIBUTION exactly.
-const METRO_AREAS: &[(&str, &str, &str, u32)] = &[
+pub(super) const METRO_AREAS: &[(&str, &str, &str, u32)] = &[
     // idx 0: Charlotte, NC — metro pop ~2.7M
     ("Charlotte",    "NC", "282", 12),
     // idx 1: Asheville, NC — metro pop ~0.5M
@@ -78,7 +78,7 @@ struct PatientBatch {
 
 /// Build all patient + emergency contact row data in memory (no awaits).
 /// Returns the batch so the caller can drop all RNG state before awaiting.
-fn build_patient_batch(n: usize) -> PatientBatch {
+fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
     use fake::Fake;
     use fake::faker::name::en::{FirstName, LastName};
     use fake::faker::address::en::StreetName;
@@ -91,9 +91,9 @@ fn build_patient_batch(n: usize) -> PatientBatch {
     let mut rng = rng();
     let relationships = ["Spouse", "Parent", "Sibling", "Child", "Friend"];
 
-    // Build weighted distribution for home clinic assignment.
-    let weights: Vec<u32> = METRO_AREAS.iter().map(|m| m.3).collect();
-    let dist = WeightedIndex::new(&weights).expect("METRO_AREAS weights are all positive");
+    // Build weighted distribution for home clinic assignment using configurable weights.
+    let dist = WeightedIndex::new(clinic_weights)
+        .unwrap_or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS).expect("default weights are valid"));
 
     let mut batch = PatientBatch {
         ec_ids:           Vec::with_capacity(n),
@@ -161,7 +161,7 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
     let n: usize = ctx.config.patients;
 
     // Generate all row data synchronously — rng is dropped before any await.
-    let batch: PatientBatch = build_patient_batch(n);
+    let batch: PatientBatch = build_patient_batch(n, &ctx.config.clinic_weights);
 
     // Process in chunks to respect the DSQL 3000-row per-transaction limit.
     for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
@@ -266,11 +266,11 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
 
     // Build all column vecs synchronously so rng is dropped before any await.
     let (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v) = {
-        use rand::thread_rng;
+        use rand::rng;
 
         let ethnicities = ["Caucasian", "African American", "Hispanic", "Asian", "Other"];
         let genders     = ["Male", "Female", "Other"];
-        let mut rng     = thread_rng();
+        let mut rng     = rng();
 
         let mut pt_ids:        Vec<uuid::Uuid>       = Vec::with_capacity(n);
         let mut first_names:   Vec<String>            = Vec::with_capacity(n);
@@ -283,7 +283,7 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
 
         for (patient_id, first_name, last_name, dob) in &ctx.patient_data {
             let age = (today - *dob).num_days() / 365;
-            let ssn = format!("{:03}-{:02}-{:04}", rng.gen_range(0..1000), rng.gen_range(0..100), rng.gen_range(0..10000));
+            let ssn = format!("{:03}-{:02}-{:04}", rng.random_range(0..1000), rng.random_range(0..100), rng.random_range(0..10000));
 
             pt_ids.push(*patient_id);
             first_names.push(first_name.clone());
@@ -291,8 +291,8 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
             dobs.push(*dob);
             ages.push(age);
             ssns.push(ssn);
-            ethnicities_v.push(ethnicities[rng.gen_range(0..ethnicities.len())].to_string());
-            genders_v.push(genders[rng.gen_range(0..genders.len())].to_string());
+            ethnicities_v.push(ethnicities[rng.random_range(0..ethnicities.len())].to_string());
+            genders_v.push(genders[rng.random_range(0..genders.len())].to_string());
         }
 
         (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v)
@@ -335,9 +335,9 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
 
     // Build column vecs synchronously so rng is dropped before any await.
     let (pt_ids, plan_ids, policy_nums, starts, ends) = {
-        use rand::thread_rng;
+        use rand::rng;
 
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut pt_ids:      Vec<uuid::Uuid>                = Vec::with_capacity(n);
         let mut plan_ids:    Vec<uuid::Uuid>                = Vec::with_capacity(n);
@@ -346,18 +346,21 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
         let mut ends:        Vec<Option<chrono::NaiveDate>> = Vec::with_capacity(n);
 
         for &patient_id in &ctx.patient_ids {
-            let plan_id = ctx.plan_ids[rng.gen_range(0..ctx.plan_ids.len())];
-            let policy  = format!("POL-{:08X}", rng.gen::<u32>());
-            let end     = if rng.gen_bool(0.2) {
-                Some(today - chrono::TimeDelta::days(rng.gen_range(30..365)))
+            let plan_id = ctx.plan_ids[rng.random_range(0..ctx.plan_ids.len())];
+            let policy  = format!("POL-{:08X}", rng.random::<u32>());
+            let end     = if rng.random_bool(0.2) {
+                Some(today - chrono::TimeDelta::days(rng.random_range(30..365)))
             } else {
                 None
             };
 
+            // Coverage start: random date within the past year
+            let start = today - chrono::TimeDelta::days(rng.random_range(0..365));
+
             pt_ids.push(patient_id);
             plan_ids.push(plan_id);
             policy_nums.push(policy);
-            starts.push(today);
+            starts.push(start);
             ends.push(end);
         }
 

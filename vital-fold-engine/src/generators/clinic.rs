@@ -5,8 +5,7 @@
 
 use chrono::NaiveTime;
 use fake::Fake;
-use fake::faker::internet::en::SafeEmail;
-use fake::faker::address::en::{StreetName, ZipCode};
+use fake::faker::address::en::StreetName;
 use rand::Rng;
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
@@ -46,19 +45,57 @@ const CLINIC_DISTRIBUTION: &[(&str, &str, &str)] = &[
 
 const WEEKDAYS: &[&str] = &["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
+const STREET_SUFFIXES: &[&str] = &[
+    "Blvd", "Ave", "Dr", "Pkwy", "Way", "Ln", "Ct", "Rd", "St", "Pl",
+];
+
 /// Generate the 10 fixed clinics and insert them into the database.
 pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppError> {
+    // Track city occurrence count for duplicate cities (Atlanta×2, Miami×2, Jacksonville×2)
+    let mut city_count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
     for (idx, (city, state, region)) in CLINIC_DISTRIBUTION.iter().enumerate() {
-        let clinic_name = format!("VitalFold Heart Center - {}", city);
-        let street_address: String = StreetName().fake();
-        let zip_code: String = ZipCode().fake();
-        let (phone, email) = {
-            use rand::rng;
-            let mut rng = rng();
-            (gen_phone(&mut rng), SafeEmail().fake::<String>())
+        let count = city_count.entry(city).or_insert(0);
+        *count += 1;
+        let occurrence = *count;
+
+        // Clinic name: append number only for cities with multiple clinics
+        let clinic_name = if CLINIC_DISTRIBUTION.iter().filter(|(c, _, _)| c == city).count() > 1 {
+            format!("VitalFold Heart Center - {} {}", city, occurrence)
+        } else {
+            format!("VitalFold Heart Center - {}", city)
         };
 
-        let result: (uuid::Uuid,) = sqlx::query_as(
+        // Realistic street address: "1234 Elm Blvd, Suite 200"
+        let street_address = {
+            let mut rng = rand::rng();
+            let street_name: String = StreetName().fake();
+            let suffix = STREET_SUFFIXES[rng.random_range(0..STREET_SUFFIXES.len())];
+            let number = rng.random_range(100..9999u32);
+            let suite = rng.random_range(100..500u32);
+            format!("{} {} {}, Suite {}", number, street_name, suffix, suite)
+        };
+
+        let zip_prefix = super::patient::METRO_AREAS[idx].2;
+        let zip_code = {
+            let mut rng = rand::rng();
+            format!("{}{:02}", zip_prefix, rng.random_range(0..100u32))
+        };
+
+        // Email matches clinic identity: vfhc_miami1@vitalfold.org
+        let city_slug = city.to_lowercase().replace(' ', "");
+        let email = if CLINIC_DISTRIBUTION.iter().filter(|(c, _, _)| c == city).count() > 1 {
+            format!("vfhc_{}{}@vitalfold.org", city_slug, occurrence)
+        } else {
+            format!("vfhc_{}@vitalfold.org", city_slug)
+        };
+
+        let phone = {
+            let mut rng = rand::rng();
+            gen_phone(&mut rng)
+        };
+
+        let result: (i64,) = sqlx::query_as(
             "INSERT INTO vital_fold.clinic (clinic_name, region, street_address, city, state, zip_code, phone_number, email) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING clinic_id"
         )
         .bind(&clinic_name)
@@ -82,21 +119,41 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
 }
 
 /// Generate clinic schedules for provider-clinic pairs.
-/// Each provider is assigned to 1-2 clinics, working 3-5 days per week.
+///
+/// Each provider is scheduled at their primary clinic (from `provider_clinic_assignments`).
+/// ~30% of providers also work at a second random clinic. Each works 3-5 days per week.
+/// If `provider_clinic_assignments` is empty (e.g. dynamic populate path), falls back
+/// to the old behavior of 1-2 random clinics.
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
-    let open_time = NaiveTime::from_hms_opt(9, 0, 0).expect("09:00 is a valid time"); // 9:00 AM
-    let close_time = NaiveTime::from_hms_opt(17, 0, 0).expect("17:00 is a valid time"); // 5:00 PM
+    let open_time = NaiveTime::from_hms_opt(8, 0, 0).expect("08:00 is a valid time");
+    let close_time = NaiveTime::from_hms_opt(17, 0, 0).expect("17:00 is a valid time");
 
-    for provider_id in &ctx.provider_ids {
-        let (num_clinics, selected_clinics) = {
+    let has_assignments = !ctx.provider_clinic_assignments.is_empty();
+
+    for (prov_idx, provider_id) in ctx.provider_ids.iter().enumerate() {
+        let selected_clinics = {
             use rand::rng;
             let mut rng = rng();
-            let n = rng.random_range(1..=2);
-            let clinics: Vec<_> = (0..n)
-                .map(|_| ctx.clinic_ids[rng.random_range(0..ctx.clinic_ids.len())])
-                .collect();
-            (n, clinics)
+            if has_assignments {
+                // Primary clinic from proportional assignment
+                let primary = ctx.clinic_ids[ctx.provider_clinic_assignments[prov_idx] % ctx.clinic_ids.len()];
+                let mut clinics = vec![primary];
+                // 30% chance of a second clinic (any random one)
+                if rng.random_bool(0.3) {
+                    let second = ctx.clinic_ids[rng.random_range(0..ctx.clinic_ids.len())];
+                    if second != primary {
+                        clinics.push(second);
+                    }
+                }
+                clinics
+            } else {
+                // Fallback: 1-2 random clinics (dynamic populate path)
+                let n = rng.random_range(1..=2);
+                (0..n)
+                    .map(|_| ctx.clinic_ids[rng.random_range(0..ctx.clinic_ids.len())])
+                    .collect()
+            }
         };
 
         for clinic_id in selected_clinics {

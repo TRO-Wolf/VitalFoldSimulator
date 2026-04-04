@@ -25,8 +25,51 @@ fn is_throttle_error<E: std::fmt::Debug>(err: &E) -> bool {
 
 use super::SimulationContext;
 
+/// Distribute `total` items across buckets proportional to `weights`.
+/// Uses largest-remainder method to ensure the sum equals `total` exactly.
+fn distribute_by_weight(total: usize, weights: &[u32], weight_sum: u32) -> Vec<usize> {
+    if weight_sum == 0 || weights.is_empty() {
+        return vec![0; weights.len()];
+    }
+    let mut result: Vec<usize> = weights.iter()
+        .map(|&w| ((total as u64 * w as u64) / weight_sum as u64) as usize)
+        .collect();
+    let assigned: usize = result.iter().sum();
+    let mut remainder: usize = total.saturating_sub(assigned);
+
+    // Distribute leftover 1-by-1 to the buckets with the largest fractional part.
+    if remainder > 0 {
+        let mut fractionals: Vec<(usize, f64)> = weights.iter().enumerate()
+            .map(|(i, &w)| {
+                let exact = total as f64 * w as f64 / weight_sum as f64;
+                (i, exact - result[i] as f64)
+            })
+            .collect();
+        fractionals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (idx, _) in fractionals {
+            if remainder == 0 { break; }
+            result[idx] += 1;
+            remainder -= 1;
+        }
+    }
+    result
+}
+
 /// Aurora DSQL maximum rows per transaction statement.
 const DSQL_BATCH_SIZE: usize = 2500;
+
+/// Pre-build a lookup: clinic_index → Vec<patient_ids> for patients assigned to that metro.
+/// Used to bias patient selection toward the clinic's geographic area.
+fn build_clinic_patient_map(
+    patient_ids: &[Uuid],
+    patient_home_clinics: &[usize],
+) -> std::collections::HashMap<usize, Vec<Uuid>> {
+    let mut map: std::collections::HashMap<usize, Vec<Uuid>> = std::collections::HashMap::new();
+    for (i, &clinic_idx) in patient_home_clinics.iter().enumerate() {
+        map.entry(clinic_idx).or_default().push(patient_ids[i]);
+    }
+    map
+}
 
 const APPOINTMENT_REASONS: &[&str] = &[
     "Annual checkup",
@@ -36,58 +79,75 @@ const APPOINTMENT_REASONS: &[&str] = &[
     "New patient visit",
 ];
 
-/// Generate all appointments for all patients in chunked bulk inserts.
+/// Generate appointments by filling every provider's schedule.
 ///
-/// Appointments are distributed randomly across `config.start_date .. config.end_date`
-/// (both inclusive). Each appointment gets a random hour between 9 AM and 4:59 PM.
+/// Each provider gets 36 appointments per day (one per 15-minute slot from 8:00–16:45)
+/// at their assigned clinic. Patients are drawn randomly (biased 70% toward home clinic).
+/// Appointments span `config.start_date .. config.end_date` (both inclusive).
 pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::{thread_rng, Rng};
+    use rand::{rng, Rng};
+    use super::SLOTS_PER_PROVIDER;
 
     let span = (ctx.config.end_date - ctx.config.start_date).num_days() + 1;
-    let total = ctx.patient_ids.len() * ctx.config.appointments_per_patient;
+    let num_providers = ctx.provider_ids.len();
+    let total = num_providers * SLOTS_PER_PROVIDER * span as usize;
+
+    // Pre-build clinic→patients lookup for geographic bias (O(n) once, not per appointment).
+    let clinic_patients = build_clinic_patient_map(&ctx.patient_ids, &ctx.patient_home_clinics);
 
     // Build all appointment data synchronously — rng dropped before any await.
     let (
         pt_ids, provider_ids, clinic_ids,
         appt_dts, reasons,
     ) = {
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut pt_ids:       Vec<Uuid>            = Vec::with_capacity(total);
-        let mut provider_ids: Vec<Uuid>            = Vec::with_capacity(total);
-        let mut clinic_ids:   Vec<Uuid>            = Vec::with_capacity(total);
+        let mut provider_ids: Vec<i64>             = Vec::with_capacity(total);
+        let mut clinic_ids:   Vec<i64>             = Vec::with_capacity(total);
         let mut appt_dts:     Vec<NaiveDateTime>   = Vec::with_capacity(total);
         let mut reasons:      Vec<String>          = Vec::with_capacity(total);
 
-        for (pat_idx, &patient_id) in ctx.patient_ids.iter().enumerate() {
-            for _ in 0..ctx.config.appointments_per_patient {
-                // 70% chance of home clinic, 30% random — gives geographic realism
-                // while still allowing cross-region visits.
-                let clinic_id = if !ctx.patient_home_clinics.is_empty()
-                    && rng.gen_bool(0.7)
-                {
-                    let home_idx = ctx.patient_home_clinics[pat_idx];
-                    ctx.clinic_ids[home_idx % ctx.clinic_ids.len()]
+        for day_offset in 0..span {
+            let date = ctx.config.start_date + TimeDelta::days(day_offset);
+
+            for (prov_idx, &provider_id) in ctx.provider_ids.iter().enumerate() {
+                // Provider's primary clinic from proportional assignment
+                let clinic_idx = if !ctx.provider_clinic_assignments.is_empty() {
+                    ctx.provider_clinic_assignments[prov_idx]
                 } else {
-                    ctx.clinic_ids[rng.gen_range(0..ctx.clinic_ids.len())]
+                    rng.random_range(0..ctx.clinic_ids.len())
                 };
-                let provider_id = ctx.provider_ids[rng.gen_range(0..ctx.provider_ids.len())];
-                let day_offset  = rng.gen_range(0..span);
-                let hour        = rng.gen_range(9..17u32);
-                let minute      = rng.gen_range(0..60u32);
-                let reason      = APPOINTMENT_REASONS[rng.gen_range(0..APPOINTMENT_REASONS.len())];
+                let clinic_id = ctx.clinic_ids[clinic_idx % ctx.clinic_ids.len()];
 
-                let appt_dt = NaiveDateTime::new(
-                    ctx.config.start_date + TimeDelta::days(day_offset),
-                    chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                        .expect("hour 9..16 and minute 0..59 are always valid"),
-                );
+                // Fill all 36 time slots for this provider on this day
+                for hour in 8u32..17u32 {
+                    for quarter in 0u32..4u32 {
+                        let minute = quarter * 15;
+                        // 70% local patient from same metro, 30% any patient
+                        let patient_id = if rng.random_bool(0.7) {
+                            clinic_patients.get(&clinic_idx)
+                                .filter(|pts| !pts.is_empty())
+                                .map(|pts| pts[rng.random_range(0..pts.len())])
+                                .unwrap_or_else(|| ctx.patient_ids[rng.random_range(0..ctx.patient_ids.len())])
+                        } else {
+                            ctx.patient_ids[rng.random_range(0..ctx.patient_ids.len())]
+                        };
+                        let reason = APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
 
-                pt_ids.push(patient_id);
-                provider_ids.push(provider_id);
-                clinic_ids.push(clinic_id);
-                appt_dts.push(appt_dt);
-                reasons.push(reason.to_string());
+                        let appt_dt = NaiveDateTime::new(
+                            date,
+                            chrono::NaiveTime::from_hms_opt(hour, minute, 0)
+                                .expect("hour 8..16 and minute 0/15/30/45 are always valid"),
+                        );
+
+                        pt_ids.push(patient_id);
+                        provider_ids.push(provider_id);
+                        clinic_ids.push(clinic_id);
+                        appt_dts.push(appt_dt);
+                        reasons.push(reason.to_string());
+                    }
+                }
             }
         }
 
@@ -103,8 +163,8 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
 
         let result = sqlx::query(
             "INSERT INTO vital_fold.appointment \
-             (patient_id, provider_id, clinic_id, appointment_date, reason_for_visit) \
-             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::timestamp[], $5::text[])"
+             (patient_id, provider_id, clinic_id, appointment_datetime, reason_for_visit) \
+             SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::bigint[], $4::timestamp[], $5::text[])"
         )
         .bind(&pt_ids[r.clone()])
         .bind(&provider_ids[r.clone()])
@@ -122,59 +182,80 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
     Ok(())
 }
 
-/// Generate appointments for a specific date range with a fixed number per day.
+/// Generate appointments for a date range by filling every provider's schedule.
 ///
-/// Unlike `generate_appointments_for_range` which distributes N appointments per patient
-/// randomly across the range, this function generates exactly `appointments_per_day`
-/// appointments on each day — each randomly assigned to a patient, clinic, and provider.
+/// Each provider gets 36 appointments per day (one per 15-minute slot from 8:00–16:45)
+/// at clinics distributed by `clinic_weights`. Patients are drawn randomly.
 ///
 /// Uses `INSERT ... RETURNING` to capture generated UUIDs for immediate downstream use.
 pub async fn generate_appointments_by_day(
     pool: &DbPool,
     patient_ids: &[Uuid],
-    provider_ids: &[Uuid],
-    clinic_ids: &[Uuid],
+    provider_ids: &[i64],
+    clinic_ids: &[i64],
     start_date: NaiveDate,
     end_date: NaiveDate,
-    appointments_per_day: usize,
-) -> Result<Vec<(Uuid, Uuid, Uuid, Uuid, NaiveDateTime)>, AppError> {
-    use rand::{thread_rng, Rng};
+    clinic_weights: &[u32],
+) -> Result<Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)>, AppError> {
+    use rand::{rng, Rng};
+    use rand::distr::{Distribution, weighted::WeightedIndex};
+    use super::SLOTS_PER_PROVIDER;
 
     let span = (end_date - start_date).num_days() + 1;
-    let total = appointments_per_day * span as usize;
-    let mut all_results: Vec<(Uuid, Uuid, Uuid, Uuid, NaiveDateTime)> = Vec::with_capacity(total);
+
+    // Distribute providers across clinics proportionally by weight.
+    let weight_sum: u32 = clinic_weights.iter().sum();
+    let providers_per_clinic: Vec<usize> = distribute_by_weight(provider_ids.len(), clinic_weights, weight_sum);
+
+    // Build a flat list of (provider_id, clinic_id) assignments.
+    let mut provider_assignments: Vec<(i64, i64)> = Vec::with_capacity(provider_ids.len());
+    let mut prov_offset = 0usize;
+    for (clinic_idx, &num_provs) in providers_per_clinic.iter().enumerate() {
+        let clinic_id = clinic_ids[clinic_idx % clinic_ids.len()];
+        for _ in 0..num_provs {
+            if prov_offset < provider_ids.len() {
+                provider_assignments.push((provider_ids[prov_offset], clinic_id));
+                prov_offset += 1;
+            }
+        }
+    }
+
+    let total = provider_assignments.len() * SLOTS_PER_PROVIDER * span as usize;
+    let mut all_results: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = Vec::with_capacity(total);
 
     // Build all appointment data synchronously — rng dropped before any await.
     let (pt_ids, prov_ids, cl_ids, appt_dts, reasons) = {
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut pt_ids:   Vec<Uuid>          = Vec::with_capacity(total);
-        let mut prov_ids: Vec<Uuid>          = Vec::with_capacity(total);
-        let mut cl_ids:   Vec<Uuid>          = Vec::with_capacity(total);
+        let mut prov_ids: Vec<i64>           = Vec::with_capacity(total);
+        let mut cl_ids:   Vec<i64>           = Vec::with_capacity(total);
         let mut appt_dts: Vec<NaiveDateTime> = Vec::with_capacity(total);
         let mut reasons:  Vec<String>        = Vec::with_capacity(total);
 
         for day_offset in 0..span {
             let date = start_date + TimeDelta::days(day_offset);
-            for _ in 0..appointments_per_day {
-                let patient_id  = patient_ids[rng.gen_range(0..patient_ids.len())];
-                let clinic_id   = clinic_ids[rng.gen_range(0..clinic_ids.len())];
-                let provider_id = provider_ids[rng.gen_range(0..provider_ids.len())];
-                let hour        = rng.gen_range(9..17u32);
-                let minute      = rng.gen_range(0..60u32);
-                let reason      = APPOINTMENT_REASONS[rng.gen_range(0..APPOINTMENT_REASONS.len())];
+            for &(provider_id, clinic_id) in &provider_assignments {
+                // Fill all 36 time slots for this provider
+                for hour in 8u32..17u32 {
+                    for quarter in 0u32..4u32 {
+                        let minute = quarter * 15;
+                        let patient_id = patient_ids[rng.random_range(0..patient_ids.len())];
+                        let reason = APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
 
-                let appt_dt = NaiveDateTime::new(
-                    date,
-                    chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                        .expect("hour 9..16 and minute 0..59 are always valid"),
-                );
+                        let appt_dt = NaiveDateTime::new(
+                            date,
+                            chrono::NaiveTime::from_hms_opt(hour, minute, 0)
+                                .expect("hour 8..16 and minute 0/15/30/45 are always valid"),
+                        );
 
-                pt_ids.push(patient_id);
-                prov_ids.push(provider_id);
-                cl_ids.push(clinic_id);
-                appt_dts.push(appt_dt);
-                reasons.push(reason.to_string());
+                        pt_ids.push(patient_id);
+                        prov_ids.push(provider_id);
+                        cl_ids.push(clinic_id);
+                        appt_dts.push(appt_dt);
+                        reasons.push(reason.to_string());
+                    }
+                }
             }
         }
 
@@ -186,11 +267,11 @@ pub async fn generate_appointments_by_day(
         let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(total);
         let r = chunk_start..chunk_end;
 
-        let rows: Vec<(Uuid, Uuid, Uuid, Uuid, NaiveDateTime)> = sqlx::query_as(
+        let rows: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = sqlx::query_as(
             "INSERT INTO vital_fold.appointment \
-             (patient_id, provider_id, clinic_id, appointment_date, reason_for_visit) \
-             SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::timestamp[], $5::text[]) \
-             RETURNING appointment_id, patient_id, clinic_id, provider_id, appointment_date"
+             (patient_id, provider_id, clinic_id, appointment_datetime, reason_for_visit) \
+             SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::bigint[], $4::timestamp[], $5::text[]) \
+             RETURNING appointment_id, patient_id, clinic_id, provider_id, appointment_datetime"
         )
         .bind(&pt_ids[r.clone()])
         .bind(&prov_ids[r.clone()])
@@ -203,9 +284,10 @@ pub async fn generate_appointments_by_day(
         all_results.extend(rows);
     }
 
+    let days = (end_date - start_date).num_days() + 1;
     tracing::info!(
-        "Generated {} appointments ({}/day) for date range {} to {}",
-        all_results.len(), appointments_per_day, start_date, end_date
+        "Generated {} appointments ({} providers × 36 slots × {} days) for {} to {}",
+        all_results.len(), provider_assignments.len(), days, start_date, end_date
     );
 
     Ok(all_results)

@@ -7,9 +7,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PatientVisit {
     pub patient_visit_id: Uuid,
+    pub appointment_id: Uuid,
     pub patient_id: Uuid,
-    pub clinic_id: Uuid,
-    pub provider_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub checkin_time: NaiveDateTime,
     pub checkout_time: Option<NaiveDateTime>,
     pub provider_seen_time: Option<NaiveDateTime>,
@@ -26,8 +27,8 @@ pub struct PatientVisit {
 pub struct PatientVisitWithVitals {
     pub patient_visit_id: Uuid,
     pub patient_id: Uuid,
-    pub clinic_id: Uuid,
-    pub provider_id: Uuid,
+    pub clinic_id: i64,
+    pub provider_id: i64,
     pub checkin_time: NaiveDateTime,
     pub checkout_time: Option<NaiveDateTime>,
     pub provider_seen_time: Option<NaiveDateTime>,

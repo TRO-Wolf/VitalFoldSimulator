@@ -120,8 +120,8 @@ Seeds date-dependent data (clinic schedules, appointments, medical records, pati
 {
   "start_date": "2026-04-01",
   "end_date": "2026-06-29",
-  "appointments_per_day": 100,
-  "records_per_appointment": 1
+  "records_per_appointment": 1,
+  "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
 }
 ```
 
@@ -129,8 +129,10 @@ Seeds date-dependent data (clinic schedules, appointments, medical records, pati
 |-------|----------|---------|-------------|
 | `start_date` | Yes | — | Inclusive start date (YYYY-MM-DD) |
 | `end_date` | Yes | — | Inclusive end date (YYYY-MM-DD) |
-| `appointments_per_day` | No | 100 | Appointments generated per day |
 | `records_per_appointment` | No | 1 | Medical records per appointment |
+| `clinic_weights` | No | `[12,3,14,14,2,14,14,12,8,8]` | Per-clinic distribution weights (10 entries) |
+
+Appointment volume is auto-calculated: each provider fills 36 slots/day (8:00–16:45 in 15-min windows), distributed across clinics by weight.
 
 **Constraints:**
 - Date range cannot exceed 90 days.
@@ -250,8 +252,11 @@ Use this to assert expected counts in your DAG.
 | `POST /simulate/reset` | All Aurora DSQL data | Yes (poll `reset_progress`) |
 | `POST /populate/reset-dynamic` | Dynamic data only (keeps patients, providers, etc.) | Yes (poll `reset_progress`) |
 | `POST /simulate/reset-dynamo` | Both DynamoDB tables | Yes (poll `dynamo_progress`) |
+| `POST /admin/init-db` | **Drops + recreates entire vital_fold schema** from `migrations/init.sql` | Synchronous |
 
-All return 202 and run in the background. Poll `GET /simulate/status` for progress.
+All data endpoints return 202 and run in the background. Poll `GET /simulate/status` for progress.
+
+**`POST /admin/init-db`** is synchronous (returns 200 on completion). Use it at the top of an Airflow DAG to guarantee a clean schema state before running Static Populate. Destructive — drops all existing `vital_fold` tables including any prior runs.
 
 ---
 
@@ -368,7 +373,6 @@ with DAG(
         return _post_and_poll(token, "/populate/dynamic", {
             "start_date": start,
             "end_date": end,
-            "appointments_per_day": 100,
             "records_per_appointment": 1,
         })
 

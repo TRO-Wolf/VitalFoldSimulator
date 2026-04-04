@@ -19,7 +19,7 @@
 use crate::db::DbPool;
 use crate::engine_state::SimulatorState;
 use crate::errors::AppError;
-use crate::generators::{run_populate, run_populate_static, run_populate_dynamic, get_populated_dates, run_simulate, run_date_range_simulate, run_today_heatmap, run_heatmap_replay, SimulationConfig};
+use crate::generators::{run_populate, run_populate_static, run_populate_dynamic, get_populated_dates, run_simulate, run_date_range_simulate, run_today_heatmap, run_heatmap_replay, SimulationConfig, NUM_CLINICS, DEFAULT_CLINIC_WEIGHTS};
 use chrono::NaiveDate;
 use std::collections::HashSet;
 use crate::models::{MessageResponse, SimulationStatusResponse};
@@ -28,6 +28,21 @@ use aws_sdk_dynamodb::Client as DynamoClient;
 use aws_sdk_dynamodb::types::{DeleteRequest, WriteRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Validate and resolve clinic weights from an optional API input.
+/// Returns DEFAULT_CLINIC_WEIGHTS if None, or validates length and positivity.
+fn resolve_clinic_weights(input: Option<Vec<u32>>) -> Result<Vec<u32>, AppError> {
+    match input {
+        None => Ok(DEFAULT_CLINIC_WEIGHTS.to_vec()),
+        Some(w) if w.len() != NUM_CLINICS => Err(AppError::BadRequest(
+            format!("clinic_weights must have exactly {} entries (one per clinic), got {}", NUM_CLINICS, w.len()),
+        )),
+        Some(w) if w.iter().any(|&v| v == 0) => Err(AppError::BadRequest(
+            "clinic_weights entries must all be > 0".to_string(),
+        )),
+        Some(w) => Ok(w),
+    }
+}
 
 /// Request body for starting a populate run.
 /// All fields are optional — omit any field to use its default value.
@@ -45,10 +60,6 @@ pub struct PopulateRequest {
     #[schema(example = 50000)]
     pub patients: Option<usize>,
 
-    /// Number of appointments to generate per patient (default: 2)
-    #[schema(example = 2)]
-    pub appointments_per_patient: Option<usize>,
-
     /// Number of medical records to generate per appointment (default: 1)
     #[schema(example = 1)]
     pub records_per_appointment: Option<usize>,
@@ -60,6 +71,12 @@ pub struct PopulateRequest {
     /// Appointment end date (inclusive), ISO 8601 YYYY-MM-DD (default: start_date + 89 days)
     #[schema(example = "2026-06-20")]
     pub end_date: Option<String>,
+
+    /// Per-clinic weights (10 entries, one per clinic). Controls distribution of
+    /// patients, providers, and appointments. Higher weight = more volume.
+    /// Order: Charlotte, Asheville, Atlanta×2, Tallahassee, Miami×2, Orlando, Jacksonville×2.
+    /// Default: [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
+    pub clinic_weights: Option<Vec<u32>>,
 }
 
 
@@ -75,8 +92,8 @@ pub struct PopulateRequest {
 ///
 /// All body fields are optional. Omit any field to use its default value.
 /// Defaults: `plans_per_company=3`, `providers=50`, `patients=50000`,
-/// `appointments_per_patient=2`, `records_per_appointment=1`,
-/// `start_date=tomorrow`, `end_date=start_date + 89 days`.
+/// `records_per_appointment=1`, `start_date=tomorrow`, `end_date=start_date + 89 days`.
+/// Appointment volume is provider-driven: each provider fills 36 slots/day at their clinic.
 ///
 /// If a run is already in progress, returns 409 Conflict.
 /// Otherwise, spawns an async background task and returns 202 Accepted.
@@ -111,7 +128,8 @@ pub async fn start_populate(
     // date-parsing errors don't leave the state stuck in "running".
     let defaults = SimulationConfig::default();
     let config = match body {
-        Some(req) => {
+        Some(json) => {
+            let req = json.into_inner();
             let nonzero = |v: Option<usize>, d: usize| v.filter(|&n| n > 0).unwrap_or(d);
 
             let start_date = req.start_date.as_ref()
@@ -132,14 +150,16 @@ pub async fn start_populate(
                 ));
             }
 
+            let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
+
             SimulationConfig {
                 plans_per_company:        nonzero(req.plans_per_company,        defaults.plans_per_company),
                 providers:                nonzero(req.providers,                defaults.providers),
                 patients:                 nonzero(req.patients,                 defaults.patients),
-                appointments_per_patient: nonzero(req.appointments_per_patient, defaults.appointments_per_patient),
                 records_per_appointment:  nonzero(req.records_per_appointment,  defaults.records_per_appointment),
                 start_date,
                 end_date,
+                clinic_weights,
             }
         }
         None => defaults,
@@ -192,10 +212,17 @@ pub struct StaticPopulateRequest {
     /// Number of patients to generate (default: 50000)
     #[schema(example = 50000)]
     pub patients: Option<usize>,
+
+    /// Per-clinic weights (10 entries). Controls distribution of patients and providers.
+    /// Default: [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
+    pub clinic_weights: Option<Vec<u32>>,
 }
 
 /// Request body for starting a dynamic populate run (Step 2).
 /// Date range and per-appointment counts.
+///
+/// Appointment volume is determined by provider count × 36 slots/day,
+/// distributed across clinics by clinic_weights.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DynamicPopulateRequest {
     /// Start date (inclusive), ISO 8601 YYYY-MM-DD
@@ -206,13 +233,13 @@ pub struct DynamicPopulateRequest {
     #[schema(example = "2026-06-30")]
     pub end_date: String,
 
-    /// Appointments per day for this date range (default: 100)
-    #[schema(example = 100)]
-    pub appointments_per_day: Option<usize>,
-
     /// Medical records per appointment (default: 1)
     #[schema(example = 1)]
     pub records_per_appointment: Option<usize>,
+
+    /// Per-clinic weights (10 entries). Controls how providers and appointments
+    /// are distributed across clinics. Default: [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
+    pub clinic_weights: Option<Vec<u32>>,
 }
 
 /// Seed Aurora DSQL with static reference data only (Step 1).
@@ -257,12 +284,15 @@ pub async fn start_populate_static(
 
     let defaults = SimulationConfig::default();
     let config = match body {
-        Some(req) => {
+        Some(json) => {
+            let req = json.into_inner();
             let nonzero = |v: Option<usize>, d: usize| v.filter(|&n| n > 0).unwrap_or(d);
+            let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
             SimulationConfig {
                 plans_per_company: nonzero(req.plans_per_company, defaults.plans_per_company),
                 providers:         nonzero(req.providers,         defaults.providers),
                 patients:          nonzero(req.patients,          defaults.patients),
+                clinic_weights,
                 ..defaults
             }
         }
@@ -332,6 +362,8 @@ pub async fn start_populate_dynamic(
     state: web::Data<SimulatorState>,
     body: web::Json<DynamicPopulateRequest>,
 ) -> Result<HttpResponse, AppError> {
+    let req = body.into_inner();
+
     // Check static data exists.
     let counts = state.get_counts();
     if counts.patients == 0 {
@@ -341,9 +373,9 @@ pub async fn start_populate_dynamic(
     }
 
     // Parse and validate dates.
-    let start_date = NaiveDate::parse_from_str(&body.start_date, "%Y-%m-%d")
+    let start_date = NaiveDate::parse_from_str(&req.start_date, "%Y-%m-%d")
         .map_err(|_| AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string()))?;
-    let end_date = NaiveDate::parse_from_str(&body.end_date, "%Y-%m-%d")
+    let end_date = NaiveDate::parse_from_str(&req.end_date, "%Y-%m-%d")
         .map_err(|_| AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string()))?;
 
     if start_date > end_date {
@@ -387,8 +419,8 @@ pub async fn start_populate_dynamic(
     }
 
     let nonzero = |v: Option<usize>, d: usize| v.filter(|&n| n > 0).unwrap_or(d);
-    let appointments_per_day    = nonzero(body.appointments_per_day, 100);
-    let records_per_appointment = nonzero(body.records_per_appointment, 1);
+    let records_per_appointment = nonzero(req.records_per_appointment, 1);
+    let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
 
     let pool_clone   = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
@@ -398,7 +430,8 @@ pub async fn start_populate_dynamic(
         match run_populate_dynamic(
             pool_clone, dynamo_clone, &state_clone,
             start_date, end_date,
-            appointments_per_day, records_per_appointment,
+            records_per_appointment,
+            clinic_weights,
         ).await {
             Ok(_) => {
                 tracing::info!("Dynamic populate completed successfully");
@@ -413,7 +446,7 @@ pub async fn start_populate_dynamic(
     Ok(HttpResponse::Accepted().json(MessageResponse {
         message: format!(
             "Dynamic populate started ({} to {}) — poll GET /simulate/status for progress",
-            body.start_date, body.end_date
+            start_date, end_date
         ),
     }))
 }
@@ -589,7 +622,7 @@ async fn run_dynamic_reset(
 
 /// Write DynamoDB records for all appointments scheduled for today.
 ///
-/// Queries Aurora DSQL for appointments where `appointment_date::date = CURRENT_DATE`,
+/// Queries Aurora DSQL for appointments where `appointment_datetime::date = CURRENT_DATE`,
 /// then writes to both DynamoDB tables (patient_visit + patient_vitals) for each.
 ///
 /// This models real-time EHR data capture: vitals and check-in data are only recorded
@@ -1198,12 +1231,12 @@ pub async fn get_visitors(
 ) -> Result<HttpResponse, AppError> {
     let rows: Vec<VisitorRow> = sqlx::query_as(
         "SELECT p.first_name, p.last_name, c.clinic_name, c.city, c.state, \
-                EXTRACT(HOUR FROM a.appointment_date)::INTEGER as hour \
+                EXTRACT(HOUR FROM a.appointment_datetime)::INTEGER as hour \
          FROM vital_fold.appointment a \
          JOIN vital_fold.patient p ON p.patient_id = a.patient_id \
          JOIN vital_fold.clinic c ON c.clinic_id = a.clinic_id \
-         WHERE a.appointment_date::date = CURRENT_DATE \
-         ORDER BY c.clinic_name, a.appointment_date"
+         WHERE a.appointment_datetime::date = CURRENT_DATE \
+         ORDER BY c.clinic_name, a.appointment_datetime"
     )
     .fetch_all(pool.get_ref())
     .await?;
@@ -1665,4 +1698,68 @@ async fn delete_dynamo_table_with_progress(
     }
 
     Ok(deleted)
+}
+
+// =============================================================================
+// Database Initialization
+// =============================================================================
+
+/// Initialize (or re-initialize) the database schema.
+///
+/// Reads `migrations/init.sql` and executes it against Aurora DSQL.
+/// This drops and recreates the `vital_fold` schema — all simulation data is lost.
+/// The `public.users` table is created with IF NOT EXISTS (safe for re-runs).
+///
+/// **Destructive** — requires confirmation from the admin dashboard.
+#[utoipa::path(
+    post,
+    path = "/admin/init-db",
+    tag = "Admin",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Schema initialized successfully", body = MessageResponse),
+        (status = 401, description = "Unauthorized", body = String),
+        (status = 500, description = "SQL execution failed", body = String)
+    )
+)]
+pub async fn init_database(
+    pool: web::Data<DbPool>,
+    state: web::Data<SimulatorState>,
+) -> Result<HttpResponse, AppError> {
+    // Read the SQL file at compile time so it's embedded in the binary.
+    let sql = include_str!("../../migrations/init.sql");
+
+    tracing::info!("Executing database initialization (migrations/init.sql)");
+
+    // Split on semicolons and execute each non-empty statement.
+    // Strip SQL comments (lines starting with --) before checking if a statement is empty.
+    let mut executed = 0usize;
+    for statement in sql.split(';') {
+        let cleaned: String = statement.lines()
+            .filter(|line| !line.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        sqlx::query(trimmed)
+            .execute(pool.get_ref())
+            .await
+            .map_err(|e| {
+                tracing::error!("Init DB failed on statement: {}", &trimmed[..trimmed.len().min(120)]);
+                AppError::Internal(format!("Schema init failed: {}", e))
+            })?;
+        executed += 1;
+    }
+
+    // Reset in-memory state since all data was dropped.
+    state.set_counts(crate::engine_state::SimulationCounts::default());
+    state.set_last_run(chrono::Utc::now());
+
+    tracing::info!("Database initialized successfully ({} statements executed)", executed);
+
+    Ok(HttpResponse::Ok().json(MessageResponse {
+        message: format!("Schema initialized — {} SQL statements executed", executed),
+    }))
 }

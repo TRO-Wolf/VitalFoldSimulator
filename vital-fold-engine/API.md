@@ -132,10 +132,10 @@ curl -X POST http://localhost:8787/populate \
     "plans_per_company": 3,
     "providers": 50,
     "patients": 50000,
-    "appointments_per_patient": 2,
     "records_per_appointment": 1,
     "start_date": "2026-04-01",
-    "end_date": "2026-06-30"
+    "end_date": "2026-06-30",
+    "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
   }'
 ```
 
@@ -186,12 +186,13 @@ curl -X POST http://localhost:8787/populate/dynamic \
   -d '{
     "start_date": "2026-04-01",
     "end_date": "2026-04-30",
-    "appointments_per_day": 100,
-    "records_per_appointment": 1
+    "records_per_appointment": 1,
+    "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
   }'
 ```
 
 `start_date` and `end_date` are **required**. Other fields optional.
+Appointment volume is auto-calculated: providers × 36 slots/day, distributed by clinic weights.
 
 **Response (202):**
 ```json
@@ -402,7 +403,7 @@ curl -X POST http://localhost:8787/simulate/reset-dynamo \
 
 ### POST /simulate/timelapse
 
-Start an hour-by-hour heatmap animation for populated dates. Steps through 9 AM to 5 PM, updating per-clinic appointment counts. Auto-populates DynamoDB if needed.
+Start an hour-by-hour heatmap animation for populated dates. Steps through 8 AM to 5 PM, updating per-clinic appointment counts. Auto-populates DynamoDB if needed.
 
 ```bash
 curl -X POST http://localhost:8787/simulate/timelapse \
@@ -510,6 +511,32 @@ curl http://localhost:8787/simulate/visitors \
   ]
 }
 ```
+
+---
+
+## Admin Endpoints
+
+### POST /admin/init-db
+
+**Destructive.** Drops the entire `vital_fold` schema (losing all simulation data) and recreates all 13 tables from `migrations/init.sql`. The `public.users` auth table is preserved (uses `CREATE TABLE IF NOT EXISTS`). In-memory simulation counts are reset.
+
+The SQL file is embedded into the binary at compile time via `include_str!`, so no filesystem access is required at runtime. Each statement is parsed and executed individually.
+
+```bash
+curl -X POST http://localhost:8787/admin/init-db \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
+```json
+{ "message": "Schema initialized — 42 SQL statements executed" }
+```
+
+**Errors:**
+- `401` — Unauthorized
+- `500` — SQL execution failed (check server logs for the specific statement)
+
+The admin dashboard includes an "Init Database" button with a confirmation modal that invokes this endpoint.
 
 ---
 

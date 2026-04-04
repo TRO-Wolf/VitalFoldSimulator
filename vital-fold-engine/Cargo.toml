@@ -38,3 +38,9 @@ aws-credential-types = "1"
 utoipa = { version = "5", features = ["actix_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["actix-web"] }
 utoipa-actix-web = "0.1"
+
+# ─── Release Profile ────────────────────────────────────────────────────────
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

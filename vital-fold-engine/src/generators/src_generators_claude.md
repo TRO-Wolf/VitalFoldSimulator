@@ -45,12 +45,13 @@ Called on any given calendar day. Queries Aurora for today's patient_visits (wit
 
 ```rust
 pub struct SimulationConfig {
-    pub plans_per_company:        usize,  // default: 3
-    pub providers:                usize,  // default: 50
-    pub patients:                 usize,  // default: 50_000
-    pub appointments_per_patient: usize,  // default: 2
-    pub records_per_appointment:  usize,  // default: 1
+    pub plans_per_company:        usize,      // default: 3
+    pub providers:                usize,      // default: 50
+    pub patients:                 usize,      // default: 50_000
+    pub records_per_appointment:  usize,      // default: 1
+    pub clinic_weights:           Vec<u32>,   // default: [12,3,14,14,2,14,14,12,8,8]
 }
+// Appointment volume = providers × 36 slots/day (SLOTS_PER_PROVIDER), distributed by clinic_weights.
 ```
 
 ```rust
@@ -61,14 +62,18 @@ pub struct SimulationContext {
     pub counts:         SimulationCounts,  // incremented by each generator
 
     // Populated by generators in order — used as FK input by later generators:
-    pub company_ids:    Vec<Uuid>,  // set by generate_insurance_companies
-    pub plan_ids:       Vec<Uuid>,  // set by generate_insurance_plans
-    pub clinic_ids:     Vec<Uuid>,  // set by generate_clinics
-    pub provider_ids:   Vec<Uuid>,  // set by generate_providers
-    pub patient_ids:    Vec<Uuid>,  // set by generate_patients
+    pub company_ids:    Vec<Uuid>,    // set by generate_insurance_companies
+    pub plan_ids:       Vec<Uuid>,    // set by generate_insurance_plans
+    pub clinic_ids:     Vec<i64>,     // BIGINT identity — set by generate_clinics
+    pub provider_ids:   Vec<i64>,     // BIGINT identity — set by generate_providers
+    pub patient_ids:    Vec<Uuid>,    // set by generate_patients
     pub patient_data:   Vec<(Uuid, String, String, NaiveDate)>,
     //                    patient_id, first_name, last_name, dob
     //                    set by generate_patients, consumed by generate_patient_demographics
+
+    // Index mappings (not IDs):
+    pub patient_home_clinics:        Vec<usize>,  // patient → clinic index (geographic bias)
+    pub provider_clinic_assignments: Vec<usize>,  // provider → clinic index (proportional)
 }
 ```
 
@@ -283,7 +288,7 @@ pub(super) async fn write_patient_visit(
 
 Reads all field values from the Aurora `PatientVisit` row (including vitals) — no random generation at write time.
 
-**Reads from ctx:** `ctx.patient_ids`, `ctx.provider_ids`, `ctx.clinic_ids`, `ctx.config.appointments_per_patient`
+**Reads from ctx:** `ctx.patient_ids`, `ctx.provider_ids`, `ctx.clinic_ids`, `ctx.provider_clinic_assignments`, `ctx.config.clinic_weights`
 
 **Writes to ctx:** `ctx.counts.appointments`
 
@@ -292,13 +297,13 @@ Reads all field values from the Aurora `PatientVisit` row (including vitals) —
 
 **Appointment — SQL columns:**
 ```
-appointment: patient_id, provider_id, clinic_id, appointment_date (TIMESTAMP), reason_for_visit
+appointment: patient_id, provider_id, clinic_id, appointment_datetime (TIMESTAMP), reason_for_visit
 ```
 
-**Appointment date generation:**
+**Appointment datetime generation:**
 - `days_ahead`: 0–89 days from today
-- `hour`: 9–16 (9 AM–4:59 PM)
-- `minute`: 0–59
+- `hour`: 9–16 (9 AM–4:45 PM)
+- `minute`: 15-minute windows only (0, 15, 30, 45) — 32 slots per day
 
 **Fixed data — appointment reasons:**
 ```
@@ -394,7 +399,7 @@ medical_record: patient_id, provider_id, clinic_id, record_date (TIMESTAMP),
                 diagnosis, treatment
 ```
 
-**record_date generation:** appointment_date + 15–120 minutes offset
+**record_date generation:** appointment_datetime + 15–120 minutes offset
 
 **Fixed data — 8 diagnosis codes:**
 ```
@@ -415,7 +420,7 @@ medical_record: patient_id, provider_id, clinic_id, record_date (TIMESTAMP),
 "Bradycardia"                   → "Pacemaker evaluation"
 ```
 
-**Data source:** fetches all appointments from Aurora (full table scan) to get `patient_id`, `provider_id`, `clinic_id`, `appointment_date` for FK references.
+**Data source:** fetches all appointments from Aurora (full table scan) to get `patient_id`, `provider_id`, `clinic_id`, `appointment_datetime` for FK references.
 
 **Insert strategy:** chunked UNNEST with `DSQL_BATCH_SIZE = 2500`. RNG in synchronous block, dropped before `.await`.
 

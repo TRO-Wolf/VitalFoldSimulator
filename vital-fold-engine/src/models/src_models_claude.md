@@ -310,13 +310,13 @@ pub struct PatientDemographics {
 
 ```rust
 pub struct Provider {
-    pub provider_id:  Uuid,
+    pub provider_id:  i64,     // BIGINT identity column (CACHE 1)
     pub first_name:   String,
     pub last_name:    String,
     pub specialty:    String,  // "Cardiologist","Cardiac Surgeon","Electrophysiologist","Interventional Cardiologist"
-    pub license_type: String,  // "MD" or "DO"
+    pub license_type: String,  // "MD" | "DO" | "NP" (~30% NPs)
     pub phone_number: String,
-    pub email:        String,
+    pub email:        String,  // "j.smith@example.org"
 }
 ```
 
@@ -332,15 +332,15 @@ pub struct Provider {
 
 ```rust
 pub struct Clinic {
-    pub clinic_id:      Uuid,
-    pub clinic_name:    String,  // e.g., "VitalFold Heart Center - Miami"
+    pub clinic_id:      i64,     // BIGINT identity column (CACHE 1)
+    pub clinic_name:    String,  // e.g., "VitalFold Heart Center - Miami 1"
     pub region:         String,  // same as state abbreviation in generated data
-    pub street_address: String,
+    pub street_address: String,  // "1234 Elm Blvd, Suite 200"
     pub city:           String,
     pub state:          String,
-    pub zip_code:       String,
+    pub zip_code:       String,  // Metro-prefix + 2 digits (e.g., "33147")
     pub phone_number:   String,
-    pub email:          String,
+    pub email:          String,  // "vfhc_miami1@vitalfold.org"
 }
 ```
 
@@ -355,10 +355,10 @@ pub struct Clinic {
 ```rust
 pub struct ClinicSchedule {
     pub schedule_id: Uuid,
-    pub clinic_id:   Uuid,      // FK → Clinic
-    pub provider_id: Uuid,      // FK → Provider
+    pub clinic_id:   i64,       // BIGINT identity FK → Clinic
+    pub provider_id: i64,       // BIGINT identity FK → Provider
     pub day_of_week: String,    // "Monday","Tuesday","Wednesday","Thursday","Friday"
-    pub start_time:  NaiveTime, // 09:00:00 fixed
+    pub start_time:  NaiveTime, // 08:00:00 fixed
     pub end_time:    NaiveTime, // 17:00:00 fixed
 }
 ```
@@ -379,9 +379,9 @@ One row per provider-clinic-day combination. Each provider works at 1–2 clinic
 pub struct Appointment {
     pub appointment_id:   Uuid,
     pub patient_id:       Uuid,          // FK → Patient
-    pub provider_id:      Uuid,          // FK → Provider
-    pub clinic_id:        Uuid,          // FK → Clinic
-    pub appointment_date: NaiveDateTime, // no timezone; 0–89 days in future at insert time
+    pub provider_id:      i64,           // BIGINT identity FK → Provider
+    pub clinic_id:        i64,           // BIGINT identity FK → Clinic
+    pub appointment_datetime: NaiveDateTime, // 15-min windows only; 8:00 AM–4:45 PM
     pub reason_for_visit: String,        // "Annual checkup","Chest pain evaluation",etc.
 }
 ```
@@ -390,7 +390,7 @@ pub struct Appointment {
 
 **Lifecycle:**
 - Populated during `POST /populate` (0–89 days in future)
-- Queried during `POST /simulate` (`WHERE appointment_date::date = CURRENT_DATE`)
+- Queried during `POST /simulate` (`WHERE appointment_datetime::date = CURRENT_DATE`)
 - Each appointment produces 1 `patient_visit` Aurora row (with embedded vitals) and 1 DynamoDB record
 
 ---
@@ -405,9 +405,9 @@ pub struct Appointment {
 pub struct MedicalRecord {
     pub medical_record_id: Uuid,
     pub patient_id:        Uuid,          // FK → Patient
-    pub provider_id:       Uuid,          // FK → Provider
-    pub clinic_id:         Uuid,          // FK → Clinic
-    pub record_date:       NaiveDateTime, // appointment_date + 15–120 min offset
+    pub provider_id:       i64,           // BIGINT FK → Provider
+    pub clinic_id:         i64,           // BIGINT FK → Clinic
+    pub record_date:       NaiveDateTime, // appointment_datetime + 15–120 min offset
     pub diagnosis:         String,        // one of 8 cardiac diagnosis codes
     pub treatment:         String,        // matched to diagnosis (deterministic)
 }
@@ -430,7 +430,7 @@ pub struct MedicalRecord {
 
 ---
 
-## `patient_visit.rs` — Patient Visit Domain (with Embedded Vitals)
+## `patient_visit.rs` — Patient Visit Domain
 
 **Imports:** `chrono::NaiveDateTime`, `serde`, `sqlx::types::BigDecimal`, `uuid::Uuid`
 
@@ -439,32 +439,44 @@ pub struct MedicalRecord {
 ```rust
 pub struct PatientVisit {
     pub patient_visit_id:        Uuid,
+    pub appointment_id:          Uuid,          // FK → Appointment (explicit link)
     pub patient_id:              Uuid,          // FK → Patient
-    pub clinic_id:               Uuid,          // FK → Clinic
-    pub provider_id:             Uuid,          // FK → Provider
-    pub checkin_time:            NaiveDateTime,
-    pub checkout_time:           Option<NaiveDateTime>,
-    pub provider_seen_time:      Option<NaiveDateTime>,
-    pub ekg_usage:               bool,          // 20% true
-    pub estimated_copay:         BigDecimal,    // $20–$150
+    pub clinic_id:               i64,           // BIGINT FK → Clinic
+    pub provider_id:             i64,           // BIGINT FK → Provider
+    pub checkin_time:            NaiveDateTime, // appointment_datetime MINUS 5-15 min
+    pub checkout_time:           Option<NaiveDateTime>, // appointment_datetime PLUS 15-30 min
+    pub provider_seen_time:      Option<NaiveDateTime>, // appointment_datetime PLUS 0-5 min
+    pub ekg_usage:               bool,          // ~20% true
+    pub estimated_copay:         BigDecimal,    // $150-$350 if EKG, $20-$150 otherwise
     pub creation_time:           NaiveDateTime,
-    pub record_expiration_epoch: i64,           // Unix epoch + 7 years
-    // Embedded vitals (wide-column pivot from former patient_vitals table)
-    pub height:                  BigDecimal,    // inches
-    pub weight:                  BigDecimal,    // pounds
-    pub blood_pressure:          String,        // "SYS/DIA" format
-    pub heart_rate:              i32,           // 50–120 bpm
-    pub temperature:             BigDecimal,    // °F, 97.0–99.5
-    pub oxygen_saturation:       BigDecimal,    // SpO2 92–100%
-    pub pulse_rate:              i32,           // 50–120 bpm
+    pub record_expiration_epoch: i64,           // Unix epoch + 90 days
 }
 ```
 
-**Table:** `vital_fold.patient_visits` | **PK:** `patient_visit_id`
+### `PatientVital`
 
-**17 columns total** — vitals are stored directly on the visit row (no separate `patient_vitals` table). This 1:1 relationship eliminates the 7x EAV row multiplier.
+Separate 1:1 table linked via `patient_visit_id` PK/FK.
 
-**Generated during:** `POST /populate` (Phase 1, Aurora) → `POST /simulate` reads these rows and writes to DynamoDB `patient_visit` table with embedded vital attributes.
+```rust
+pub struct PatientVital {
+    pub patient_visit_id:        Uuid,          // PK + FK → PatientVisit
+    pub patient_id:              Uuid,
+    pub clinic_id:               i64,           // BIGINT FK
+    pub provider_id:             i64,           // BIGINT FK
+    pub height:                  BigDecimal,    // inches
+    pub weight:                  BigDecimal,    // pounds
+    pub blood_pressure:          String,        // "SYS/DIA" format
+    pub heart_rate:              i32,           // 50-120 bpm
+    pub temperature:             BigDecimal,    // °F, 97.0-99.5
+    pub oxygen_saturation:       BigDecimal,    // SpO2 95-100%
+    pub creation_time:           NaiveDateTime,
+    pub record_expiration_epoch: i64,
+}
+```
+
+**Tables:** `vital_fold.patient_visit` + `vital_fold.patient_vitals` (separate tables, 1:1 via patient_visit_id)
+
+**Generated during:** `POST /populate/dynamic` (Phase 2, Aurora) → `POST /simulate/date-range` reads JOIN of both tables and writes to DynamoDB `patient_visit` and `patient_vitals` tables.
 
 ---
 

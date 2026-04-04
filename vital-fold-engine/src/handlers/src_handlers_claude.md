@@ -163,12 +163,13 @@ pub async fn me(
 ```rust
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PopulateRequest {
-    pub plans_per_company:        Option<usize>,  // default: 3
-    pub providers:                Option<usize>,  // default: 50
-    pub patients:                 Option<usize>,  // default: 50_000
-    pub appointments_per_patient: Option<usize>,  // default: 2
-    pub records_per_appointment:  Option<usize>,  // default: 1
+    pub plans_per_company:        Option<usize>,    // default: 3
+    pub providers:                Option<usize>,    // default: 50
+    pub patients:                 Option<usize>,    // default: 50_000
+    pub records_per_appointment:  Option<usize>,    // default: 1
+    pub clinic_weights:           Option<Vec<u32>>, // default: [12,3,14,14,2,14,14,12,8,8]
 }
+// Appointment volume is provider-driven: each provider fills 36 slots/day.
 ```
 
 All fields are `Option`. `None` **and** `0` both fall back to the default (zero-filter logic in handler).

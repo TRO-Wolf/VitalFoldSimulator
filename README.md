@@ -64,7 +64,7 @@ See [QUICKSTART.md](vital-fold-engine/QUICKSTART.md) for detailed setup or [INST
 
 ---
 
-## API Endpoints (21 total)
+## API Endpoints (22 total)
 
 Interactive docs available at `/swagger-ui/` when the server is running.
 
@@ -114,6 +114,12 @@ Interactive docs available at `/swagger-ui/` when the server is running.
 | POST | `/simulate/replay-reset` | Clear replay state |
 | GET | `/simulate/visitors` | Today's visitors grouped by clinic |
 
+### Admin (JWT required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/admin/init-db` | Drop and recreate the entire vital_fold schema from `migrations/init.sql` |
+
 See [API.md](vital-fold-engine/API.md) for full request/response examples with curl commands.
 
 ---
@@ -125,10 +131,12 @@ The engine serves a built-in admin SPA at the root URL (`/`). No build step requ
 **Features:**
 - Login with admin credentials or user email/password
 - Real-time database counts (Aurora + DynamoDB) with refresh
-- Populate controls: configure patient count, provider count, date range
+- Populate controls: configure patient count, provider count, date range, per-clinic weights
 - Progress bars for populate, reset, and DynamoDB sync operations
-- Clinic activity heatmap with hour-by-hour timelapse animation
+- Clinic activity heatmap with hour-by-hour timelapse animation (8 AM – 5 PM)
 - Per-clinic visitor list with patient names
+- **Init Database** button — drops and recreates the entire schema from `migrations/init.sql`
+- Dark theme
 
 See [frontend.md](docs/frontend.md) for architecture details.
 
@@ -178,8 +186,44 @@ The simulator generates cardiac clinic data across 10 clinics in the southeaster
 - **Clinics:** Charlotte, Asheville (NC) · Atlanta ×2 (GA) · Tallahassee, Miami ×2, Orlando, Jacksonville ×2 (FL)
 - **Insurance:** 7 fictional carriers (Orange Spear, Care Medical, Cade Medical, Multiplied Health, Octi Care, Tatnay, Caymana)
 - **Diagnoses:** 8 cardiac codes (AFib, CAD, Chest Pain, Hypertension, Hyperlipidemia, SOB, Tachycardia, Bradycardia)
-- **Patients:** Geographically distributed — addresses and clinic assignments weighted by metro population
-- **Defaults:** 50,000 patients, 50 providers, 3 plans/company, 2 appointments/patient
+- **Defaults:** 50,000 patients, 50 providers, 3 plans/company
+
+### Provider-Driven Appointment Model
+Appointment volume is **deterministic**, not configurable:
+- Each provider fills **36 appointment slots per day** (8:00 AM to 4:45 PM in 15-minute windows)
+- A clinic with 4 providers generates 144 appointments/day
+- With 50 providers × 90 days = 162,000 appointments per populate run
+
+### Per-Clinic Distribution (clinic_weights)
+Patients, providers, and appointments are distributed across clinics by configurable weights:
+- **Default:** `[12, 3, 14, 14, 2, 14, 14, 12, 8, 8]` (Charlotte, Asheville, Atlanta×2, Tallahassee, Miami×2, Orlando, Jacksonville×2)
+- **Result:** Miami/Atlanta clinics get ~7 providers each (~252 appts/day); Asheville gets 1-2 (~36-72 appts/day)
+
+### Provider Details
+- **License types:** ~30% Nurse Practitioners (NP), ~70% MD/DO split evenly
+- **Email format:** `j.smith@example.org` (first initial + last name)
+- **Specialties:** Cardiologist, Cardiac Surgeon, Electrophysiologist, Interventional Cardiologist
+
+### Clinic Details
+- **Email format:** `vfhc_miami1@vitalfold.org` (VFHC prefix + city + number for duplicates)
+- **Addresses:** Realistic format `1234 Elm Blvd, Suite 200`
+- **Zip codes:** Metro-area prefix + 2 digits (e.g., Miami → `331xx`)
+
+### Visit Timing
+- `checkin_time`: 5-15 minutes **before** scheduled appointment (early arrival)
+- `provider_seen_time`: 0-5 minutes after scheduled time
+- `checkout_time`: 15-30 minutes after scheduled time
+
+### Copay Structure
+- **EKG visit (~20%):** $150-$350
+- **Standard visit:** $20-$150
+
+### Insurance Coverage
+- `coverage_start_date` is a random date within the past 365 days
+
+### Identity Columns (Aurora DSQL)
+- `provider.provider_id` and `clinic.clinic_id` are **BIGINT** identity columns with `CACHE 1` (small tables, tight ordering)
+- All other IDs (`patient_id`, `appointment_id`, etc.) remain **UUID**
 
 ---
 
