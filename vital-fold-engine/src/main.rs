@@ -10,21 +10,24 @@ mod errors;
 mod generators;
 mod handlers;
 mod middleware;
+// Model structs are deserialization contracts (sqlx::FromRow) —
+// they're populated from query results even when not constructed
+// by application code, so dead_code is expected here.
+#[allow(dead_code)]
 mod models;
 mod routes;
 
-use actix_web::{web, App, HttpServer, middleware::Logger};
+use actix_web::{web, App, HttpServer};
 use engine_state::SimulatorState;
-use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use handlers::{health, auth, user, simulation};
-use handlers::simulation::PopulateRequest;
-use models::{RegisterRequest, LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
+use handlers::simulation::{PopulateRequest, StaticPopulateRequest, DynamicPopulateRequest, TimelapseRequest, DateRangeRequest, VisitorsResponse, ClinicVisitors, VisitorEntry};
+use models::{LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
 use handlers::auth::AdminLoginRequest;
-use engine_state::SimulationCounts;
+use engine_state::{SimulationCounts, ClinicActivity, TimelapseState, ResetProgress, PopulateProgress};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -39,20 +42,28 @@ use engine_state::SimulationCounts;
     ),
     paths(
         health::health_check,
-        auth::register,
         auth::login,
         auth::admin_login,
         user::me,
         simulation::start_populate,
+        simulation::start_populate_static,
+        simulation::start_populate_dynamic,
+        simulation::get_populated_dates_handler,
+        simulation::reset_dynamic_data,
         simulation::start_simulate,
+        simulation::start_date_range_simulate,
         simulation::stop_simulation,
         simulation::get_status,
         simulation::reset_data,
-        simulation::reset_dynamo
+        simulation::reset_dynamo,
+        simulation::start_timelapse,
+        simulation::get_heatmap,
+        simulation::get_visitors,
+        simulation::start_replay,
+        simulation::reset_replay
     ),
     components(
         schemas(
-            RegisterRequest,
             LoginRequest,
             AuthResponse,
             UserProfile,
@@ -60,12 +71,23 @@ use engine_state::SimulationCounts;
             SimulationStatusResponse,
             SimulationCounts,
             PopulateRequest,
-            AdminLoginRequest
+            StaticPopulateRequest,
+            DynamicPopulateRequest,
+            DateRangeRequest,
+            AdminLoginRequest,
+            TimelapseRequest,
+            TimelapseState,
+            ClinicActivity,
+            ResetProgress,
+            PopulateProgress,
+            VisitorsResponse,
+            ClinicVisitors,
+            VisitorEntry
         )
     ),
     tags(
         (name = "Health",       description = "Health check endpoints"),
-        (name = "Authentication", description = "User registration and login"),
+        (name = "Authentication", description = "User login"),
         (name = "User",         description = "User profile management"),
         (name = "Population",   description = "Phase 1: seed Aurora DSQL with synthetic healthcare data"),
         (name = "Simulation",   description = "Phase 2: write DynamoDB records for today's appointments, plus run control")
@@ -99,8 +121,8 @@ async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("vital_fold_engine=info".parse().unwrap())
-                .add_directive("actix_web=info".parse().unwrap()),
+                .add_directive("vital_fold_engine=info".parse().expect("valid tracing directive"))
+                .add_directive("actix_web=info".parse().expect("valid tracing directive")),
         )
         .init();
 
@@ -151,6 +173,13 @@ async fn main() -> std::io::Result<()> {
     let host = config.host.clone();
     let port = config.port;
 
+    // Resolve static file directory: env var override or compile-time default.
+    // CARGO_MANIFEST_DIR is baked in at compile time, so the binary always knows
+    // where static/ lives even when run from a different working directory.
+    let static_dir = std::env::var("STATIC_DIR")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string());
+    tracing::info!("Serving static files from: {}", static_dir);
+
     // Start the HTTP server
     HttpServer::new(move || {
         // Return a descriptive 400 on JSON parse failures instead of silently
@@ -181,6 +210,8 @@ async fn main() -> std::io::Result<()> {
             )
             // Routes
             .configure(routes::configure)
+            // Static frontend files (must come after API routes)
+            .service(actix_files::Files::new("/", &static_dir).index_file("index.html"))
     })
     .bind((host.as_str(), port))?
     .run()

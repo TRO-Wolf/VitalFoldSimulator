@@ -1,725 +1,569 @@
-# API Reference
+# VitalFold Engine — API Reference
 
-Complete documentation for all VitalFold Engine API endpoints.
+Complete reference for all 22 REST endpoints. Interactive Swagger UI is also available at `/swagger-ui/` when the server is running.
 
-## Table of Contents
-
-1. [Authentication](#authentication)
-2. [Public Endpoints](#public-endpoints)
-3. [Protected Endpoints](#protected-endpoints)
-4. [Response Formats](#response-formats)
-5. [Error Handling](#error-handling)
-6. [Rate Limiting](#rate-limiting)
+**Base URL:** `http://localhost:8787` (default)
 
 ---
 
 ## Authentication
 
-### JWT Bearer Token
+All protected endpoints require a JWT bearer token in the `Authorization` header.
 
-Protected endpoints require authentication using JWT bearer tokens.
-
-**How to Authenticate:**
-
-1. Register or login to get a JWT token
-2. Include token in request header:
-
-```http
-Authorization: Bearer <jwt-token>
-```
-
-**Example:**
+### Get a Token
 
 ```bash
-curl -X GET http://127.0.0.1:8787/api/v1/me \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+curl -X POST http://localhost:8787/api/v1/auth/admin-login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-admin-password"}'
 ```
 
-**Token Structure:**
-
-- **Algorithm**: HMAC SHA-256
-- **Format**: Three base64-encoded parts separated by dots
-- **Payload**: Contains user ID and email
-- **Expiry**: Configurable (default 24 hours)
-- **Refresh**: Obtain new token by logging in again
-
-**Token Claims:**
-
+**Response (200):**
 ```json
 {
-  "sub": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "user@example.com",
-  "iat": 1771808822,
-  "exp": 1771895222
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "user": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "email": "admin@admin.internal",
+    "created_at": "2026-03-26T12:00:00Z"
+  }
 }
+```
+
+Use the token on all subsequent requests:
+```bash
+-H "Authorization: Bearer <token>"
 ```
 
 ---
 
 ## Public Endpoints
 
-### 1. Health Check
+### GET /health
 
-Check if the API is running and healthy.
+Health check. No authentication required.
 
-**Endpoint:**
-```
-GET /health
-```
-
-**Authentication:** None
-
-**Request:**
 ```bash
-curl http://127.0.0.1:8787/health
+curl http://localhost:8787/health
 ```
 
-**Response:** `200 OK`
+**Response (200):**
 ```json
-{
-  "status": "healthy"
-}
+{ "status": "ok" }
 ```
-
-**Use Cases:**
-- Load balancer health checks
-- Monitoring and uptime verification
-- Application startup verification
 
 ---
 
-### 2. Register User
+### POST /api/v1/auth/login
 
-Create a new user account.
+Login with email and password (database user).
 
-**Endpoint:**
+```bash
+curl -X POST http://localhost:8787/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret"}'
 ```
-POST /api/v1/auth/register
-```
 
-**Authentication:** None
-
-**Request Body:**
+**Response (200):**
 ```json
 {
-  "email": "user@example.com",
-  "password": "SecurePassword123"
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "user": { "id": "...", "email": "user@example.com", "created_at": "..." }
 }
 ```
 
-**Request:**
+**Errors:**
+- `401` — Invalid credentials (same message for wrong email or wrong password)
+
+---
+
+### POST /api/v1/auth/admin-login
+
+Login with admin credentials from environment variables (`ADMIN_USERNAME`, `ADMIN_PASSWORD`). No database user required.
+
 ```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/register \
+curl -X POST http://localhost:8787/api/v1/auth/admin-login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-admin-password"}'
+```
+
+**Response (200):** Same shape as `/login`.
+
+**Errors:**
+- `401` — Invalid admin credentials
+
+---
+
+## User Endpoints
+
+### GET /api/v1/me
+
+Get the current user's profile from the JWT claims.
+
+```bash
+curl http://localhost:8787/api/v1/me \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000001",
+  "email": "admin@admin.internal",
+  "created_at": "2026-03-26T12:00:00Z"
+}
+```
+
+---
+
+## Population Endpoints (Phase 1 & 2)
+
+These endpoints seed Aurora DSQL with synthetic healthcare data. No DynamoDB writes.
+
+### POST /populate
+
+Legacy endpoint — runs all 13 populate steps in a single call. Prefer the split `/populate/static` + `/populate/dynamic` workflow for production.
+
+```bash
+curl -X POST http://localhost:8787/populate \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "newuser@example.com",
-    "password": "SecurePassword123"
-  }'
-```
-
-**Response:** `201 Created`
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "newuser@example.com"
-}
-```
-
-**Status Codes:**
-- `201 Created` - User registered successfully
-- `400 Bad Request` - Invalid email or password format
-- `409 Conflict` - Email already registered
-- `500 Internal Server Error` - Database error
-
-**Validation Rules:**
-- Email must be valid email format
-- Email must be unique
-- Password must be at least 8 characters
-- Password is hashed with bcrypt before storage
-
-**Security Notes:**
-- Passwords are never returned
-- Token received can be used immediately
-- Email verification not required (for development)
-
----
-
-### 3. Login User
-
-Authenticate with existing credentials and receive JWT token.
-
-**Endpoint:**
-```
-POST /api/v1/auth/login
-```
-
-**Authentication:** None
-
-**Request Body:**
-```json
-{
-  "email": "user@example.com",
-  "password": "SecurePassword123"
-}
-```
-
-**Request:**
-```bash
-curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "password": "SecurePassword123"
-  }'
-```
-
-**Response:** `200 OK`
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "user@example.com"
-}
-```
-
-**Status Codes:**
-- `200 OK` - Login successful
-- `400 Bad Request` - Missing email or password
-- `401 Unauthorized` - Invalid credentials
-- `500 Internal Server Error` - Database error
-
-**Token Usage:**
-- Token valid for configured duration (default 24 hours)
-- Include in `Authorization: Bearer` header for protected endpoints
-- Login again to refresh token
-
----
-
-## Protected Endpoints
-
-All protected endpoints require valid JWT token in `Authorization: Bearer` header.
-
-### 1. Get Current User Profile
-
-Retrieve the profile of the authenticated user.
-
-**Endpoint:**
-```
-GET /api/v1/me
-```
-
-**Authentication:** JWT Bearer Token (Required)
-
-**Request Headers:**
-```http
-Authorization: Bearer <jwt-token>
-Content-Type: application/json
-```
-
-**Request:**
-```bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-curl -X GET http://127.0.0.1:8787/api/v1/me \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `200 OK`
-```json
-{
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "user@example.com",
-  "created_at": "2024-02-15T10:30:00Z"
-}
-```
-
-**Status Codes:**
-- `200 OK` - User profile retrieved
-- `401 Unauthorized` - Missing or invalid token
-- `404 Not Found` - User not found in database
-- `500 Internal Server Error` - Database error
-
-**Use Cases:**
-- Verify current user information
-- Get user ID for logging/auditing
-- Validate token freshness
-
----
-
-### 2. Start Simulation
-
-Begin generating synthetic healthcare data.
-
-**Endpoint:**
-```
-POST /simulate
-```
-
-**Authentication:** JWT Bearer Token (Required)
-
-**Request Body:**
-```json
-{
-  "num_providers": 50,
-  "num_patients": 100,
-  "appointments_per_patient": 3,
-  "medical_records_per_patient": 2
-}
-```
-
-**Request:**
-```bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-curl -X POST http://127.0.0.1:8787/simulate \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "num_providers": 50,
-    "num_patients": 100,
-    "appointments_per_patient": 3,
-    "medical_records_per_patient": 2
-  }'
-```
-
-**Response:** `202 Accepted`
-```json
-{
-  "message": "Simulation started"
-}
-```
-
-**Status Codes:**
-- `202 Accepted` - Simulation started (running asynchronously)
-- `400 Bad Request` - Simulation already running
-- `401 Unauthorized` - Missing or invalid token
-- `500 Internal Server Error` - Failed to start simulation
-
-**Configuration Parameters:**
-
-| Parameter | Type | Default | Range |
-|-----------|------|---------|-------|
-| `num_providers` | integer | 50 | 1-1000 |
-| `num_patients` | integer | 100 | 1-10000 |
-| `appointments_per_patient` | integer | 3 | 1-20 |
-| `medical_records_per_patient` | integer | 2 | 0-10 |
-
-**Data Generated:**
-
-Simulations generate the following:
-- Insurance companies (7 fixed)
-- Insurance plans (per company)
-- Clinics (10 fixed distribution)
-- Providers (configurable count)
-- Patients (configurable count)
-- Emergency contacts (1 per patient)
-- Patient demographics (1 per patient)
-- Patient insurance links (random per patient)
-- Clinic schedules (per clinic)
-- Appointments (configurable per patient)
-- Medical records (configurable per patient)
-
-**Performance:**
-
-- Typical generation rate: 1000+ inserts/second
-- 100 providers + 100 patients + 300 appointments: ~30-60 seconds
-- Non-blocking: Returns immediately, runs asynchronously
-
-**Monitoring:**
-
-Check status while simulation runs:
-```bash
-curl -X GET http://127.0.0.1:8787/simulate/status \
-  -H "Authorization: Bearer $TOKEN"
-```
-
----
-
-### 3. Stop Simulation
-
-Stop the currently running simulation.
-
-**Endpoint:**
-```
-POST /simulate/stop
-```
-
-**Authentication:** JWT Bearer Token (Required)
-
-**Request:**
-```bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-curl -X POST http://127.0.0.1:8787/simulate/stop \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `200 OK`
-```json
-{
-  "message": "Simulation stopped"
-}
-```
-
-**Status Codes:**
-- `200 OK` - Simulation stopped successfully
-- `401 Unauthorized` - Missing or invalid token
-- `500 Internal Server Error` - Failed to stop simulation
-
-**Behavior:**
-
-- Gracefully stops the simulation task
-- Already-inserted data is NOT rolled back
-- Safe to call even if no simulation is running
-- Can restart immediately after stopping
-
-**Use Cases:**
-
-- Stop long-running simulations
-- Free up resources during maintenance
-- Change configuration and restart
-
----
-
-### 4. Get Simulation Status
-
-Check whether a simulation is currently running and view metrics from the last run.
-
-**Endpoint:**
-```
-GET /simulate/status
-```
-
-**Authentication:** JWT Bearer Token (Required)
-
-**Request:**
-```bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-curl -X GET http://127.0.0.1:8787/simulate/status \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-**Response:** `200 OK`
-```json
-{
-  "running": false,
-  "last_run": "2024-02-15T14:30:00Z",
-  "counts": {
-    "insurance_companies": 7,
-    "insurance_plans": 42,
-    "clinics": 10,
+    "plans_per_company": 3,
     "providers": 50,
-    "patients": 100,
-    "appointments": 285,
-    "medical_records": 198,
-    "emergency_contacts": 100,
-    "patient_demographics": 100,
-    "patient_insurance": 250,
-    "clinic_schedules": 60
+    "patients": 50000,
+    "records_per_appointment": 1,
+    "start_date": "2026-04-01",
+    "end_date": "2026-06-30",
+    "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
+  }'
+```
+
+All fields are optional — omit any to use defaults. Body can be omitted entirely.
+
+**Response (202):**
+```json
+{ "message": "Population started" }
+```
+
+**Errors:**
+- `400` — Invalid date range (end before start, or > 90 days)
+- `409` — A run is already in progress
+
+---
+
+### POST /populate/static
+
+**Phase 1:** Seed reference data only (insurance, clinics, providers, patients, demographics, insurance links). Run once. Returns `409` if static data already exists.
+
+```bash
+curl -X POST http://localhost:8787/populate/static \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"patients": 1000, "providers": 20}'
+```
+
+All fields optional. Defaults: `plans_per_company=3`, `providers=50`, `patients=50000`.
+
+**Response (202):**
+```json
+{ "message": "Static populate started (8 steps)" }
+```
+
+**Errors:**
+- `409` — Static data already exists (patients > 0), or a run is already in progress
+
+---
+
+### POST /populate/dynamic
+
+**Phase 2:** Seed date-dependent data (clinic schedules, appointments, medical records, patient visits, patient vitals) for a date range. Requires Phase 1 data to exist. Can be called multiple times for different date ranges.
+
+```bash
+curl -X POST http://localhost:8787/populate/dynamic \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_date": "2026-04-01",
+    "end_date": "2026-04-30",
+    "records_per_appointment": 1,
+    "clinic_weights": [12, 3, 14, 14, 2, 14, 14, 12, 8, 8]
+  }'
+```
+
+`start_date` and `end_date` are **required**. Other fields optional.
+Appointment volume is auto-calculated: providers × 36 slots/day, distributed by clinic weights.
+
+**Response (202):**
+```json
+{ "message": "Dynamic populate started for 2026-04-01 to 2026-04-30 (7 steps)" }
+```
+
+**Errors:**
+- `400` — No static data found, date range > 90 days, end before start, or date overlap with existing data
+- `409` — A run is already in progress
+
+---
+
+### GET /populate/dates
+
+List all dates that have been populated with appointments (useful to avoid overlap).
+
+```bash
+curl http://localhost:8787/populate/dates \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
+```json
+["2026-04-01", "2026-04-02", "2026-04-03"]
+```
+
+---
+
+### POST /populate/reset-dynamic
+
+Delete dynamic data only (schedules, appointments, records, visits, vitals). Preserves static reference data (insurance, clinics, providers, patients).
+
+```bash
+curl -X POST http://localhost:8787/populate/reset-dynamic \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (202):**
+```json
+{ "message": "Dynamic data reset started" }
+```
+
+**Errors:**
+- `409` — A run is already in progress
+
+---
+
+## Simulation Endpoints (Phase 3 — DynamoDB Sync)
+
+These endpoints sync Aurora visit data to DynamoDB.
+
+### POST /simulate
+
+Sync today's Aurora visits to both DynamoDB tables (`patient_visit` and `patient_vitals`).
+
+```bash
+curl -X POST http://localhost:8787/simulate \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (202):**
+```json
+{ "message": "Simulation started" }
+```
+
+**Errors:**
+- `409` — A run is already in progress
+
+---
+
+### POST /simulate/date-range
+
+Sync Aurora visit data to DynamoDB for a specific date range. Requires Dynamic Populate to have created visits for those dates.
+
+```bash
+curl -X POST http://localhost:8787/simulate/date-range \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2026-04-01", "end_date": "2026-04-30"}'
+```
+
+**Response (202):**
+```json
+{ "message": "DynamoDB sync started for 2026-04-01 to 2026-04-30" }
+```
+
+**Errors:**
+- `400` — No visits exist for the date range, or range > 90 days
+- `409` — A run is already in progress
+
+---
+
+### POST /simulate/stop
+
+Stop any running background task (populate, simulate, reset, timelapse).
+
+```bash
+curl -X POST http://localhost:8787/simulate/stop \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
+```json
+{ "message": "Run stopped" }
+```
+
+---
+
+### GET /simulate/status
+
+Poll the current run status, row counts, and progress. This is the primary polling endpoint.
+
+```bash
+curl http://localhost:8787/simulate/status \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
+```json
+{
+  "running": true,
+  "last_run": "2026-03-26T15:30:00Z",
+  "insurance_companies": 7,
+  "insurance_plans": 21,
+  "clinics": 10,
+  "providers": 50,
+  "patients": 50000,
+  "emergency_contacts": 50000,
+  "patient_demographics": 50000,
+  "patient_insurance": 50000,
+  "clinic_schedules": 250,
+  "appointments": 100000,
+  "medical_records": 100000,
+  "patient_visits": 100000,
+  "patient_vitals": 100000,
+  "dynamo_patient_visits": 3000,
+  "dynamo_patient_vitals": 3000,
+  "populate_progress": {
+    "current_step": "Appointments",
+    "steps_done": 9,
+    "total_steps": 13,
+    "rows_written": 150271,
+    "is_complete": false
   }
 }
 ```
 
-**Status Codes:**
-- `200 OK` - Status retrieved successfully
-- `401 Unauthorized` - Missing or invalid token
-- `500 Internal Server Error` - Failed to retrieve status
+The `populate_progress`, `reset_progress`, and `dynamo_progress` fields appear only when a corresponding operation is active.
 
-**Response Fields:**
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `running` | boolean | Whether simulation is currently running |
-| `last_run` | ISO 8601 datetime | When the last simulation completed (null if never run) |
-| `counts` | object | Detailed count of each generated entity type |
+### GET /simulate/db-counts
 
-**Counts Object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `insurance_companies` | integer | Number of insurance companies (fixed at 7) |
-| `insurance_plans` | integer | Number of insurance plans generated |
-| `clinics` | integer | Number of clinics (fixed at 10) |
-| `providers` | integer | Number of providers generated |
-| `patients` | integer | Number of patients generated |
-| `appointments` | integer | Number of appointments generated |
-| `medical_records` | integer | Number of medical records generated |
-| `emergency_contacts` | integer | Number of emergency contacts (1 per patient) |
-| `patient_demographics` | integer | Number of demographic records (1 per patient) |
-| `patient_insurance` | integer | Number of patient-insurance relationships |
-| `clinic_schedules` | integer | Number of clinic schedule entries |
-
-**Polling Example:**
+Live record counts queried directly from Aurora (13 `COUNT(*)` queries) and DynamoDB (scan with `Select::Count`). More expensive than `/status` — use on explicit user action, not polling.
 
 ```bash
-#!/bin/bash
+curl http://localhost:8787/simulate/db-counts \
+  -H "Authorization: Bearer <token>"
+```
 
-TOKEN="your-jwt-token"
-ENDPOINT="http://127.0.0.1:8787/simulate/status"
+**Response (200):** Same shape as the counts in `/status`, but with live database values instead of in-memory counters.
 
-echo "Starting simulation..."
-curl -X POST http://127.0.0.1:8787/simulate \
-  -H "Authorization: Bearer $TOKEN"
+---
 
-# Poll until complete
-while true; do
-  STATUS=$(curl -s "$ENDPOINT" -H "Authorization: Bearer $TOKEN")
-  RUNNING=$(echo "$STATUS" | jq .running)
+## Reset Endpoints
 
-  if [ "$RUNNING" = "false" ]; then
-    echo "Simulation complete!"
-    echo "$STATUS" | jq .counts
-    break
-  fi
+### POST /simulate/reset
 
-  echo "Still running..."
-  sleep 5
-done
+Delete all data from all 13 Aurora DSQL tables. FK-safe deletion order with retry logic for Aurora DSQL `OC000` errors.
+
+```bash
+curl -X POST http://localhost:8787/simulate/reset \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (202):**
+```json
+{ "message": "Aurora reset started" }
+```
+
+Poll `/simulate/status` — the `reset_progress` field tracks which table is being deleted.
+
+**Errors:**
+- `409` — A run is already in progress
+
+---
+
+### POST /simulate/reset-dynamo
+
+Delete all items from both DynamoDB tables (`patient_visit` and `patient_vitals`). Uses scan + batch delete with throttle pacing.
+
+```bash
+curl -X POST http://localhost:8787/simulate/reset-dynamo \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (202):**
+```json
+{ "message": "DynamoDB reset started" }
+```
+
+**Errors:**
+- `409` — A run is already in progress
+
+---
+
+## Visualization Endpoints
+
+### POST /simulate/timelapse
+
+Start an hour-by-hour heatmap animation for populated dates. Steps through 8 AM to 5 PM, updating per-clinic appointment counts. Auto-populates DynamoDB if needed.
+
+```bash
+curl -X POST http://localhost:8787/simulate/timelapse \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"window_interval_secs": 5}'
+```
+
+`window_interval_secs` is optional (default: 5). Controls seconds between hour-window updates.
+
+**Response (202):**
+```json
+{ "message": "Timelapse started" }
 ```
 
 ---
 
-### 5. Reset All Data
+### GET /simulate/heatmap
 
-Delete all generated data by truncating vital_fold schema tables.
+Poll the current heatmap state during a timelapse or replay.
 
-**Endpoint:**
-```
-POST /simulate/reset
-```
-
-**Authentication:** JWT Bearer Token (Required)
-
-**Request:**
 ```bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-curl -X POST http://127.0.0.1:8787/simulate/reset \
-  -H "Authorization: Bearer $TOKEN"
+curl http://localhost:8787/simulate/heatmap \
+  -H "Authorization: Bearer <token>"
 ```
 
-**Response:** `200 OK`
+**Response (200) — active:**
 ```json
 {
-  "message": "All data reset successfully"
+  "simulation_day": "2026-04-15",
+  "day_number": 3,
+  "total_days": 30,
+  "sim_hour": 14,
+  "clinics": [
+    { "clinic_id": "...", "city": "Miami", "state": "FL", "active_patients": 12 },
+    { "clinic_id": "...", "city": "Atlanta", "state": "GA", "active_patients": 8 }
+  ]
 }
 ```
 
-**Status Codes:**
-- `200 OK` - Data reset successfully
-- `401 Unauthorized` - Missing or invalid token
-- `500 Internal Server Error` - Failed to reset data
-
-⚠️ **WARNING: This operation is destructive!**
-
-- Deletes ALL generated data (cannot be undone)
-- Insurance companies, clinics are NOT deleted (fixed data)
-- Tables truncated in dependency order to maintain referential integrity
-- Safe to run even if database is empty
-
-**Tables Truncated:**
-
-1. `medical_records`
-2. `appointments`
-3. `clinic_schedules`
-4. `patient_insurance`
-5. `patient_demographics`
-6. `emergency_contacts`
-7. `patients`
-8. `providers`
-
-**Use Cases:**
-
-- Start fresh data generation
-- Clean up test data
-- Reset before production scenario
-- Prepare for new simulation run
-
-**Safe Reset Pattern:**
-
-```bash
-# 1. Stop any running simulation
-curl -X POST http://127.0.0.1:8787/simulate/stop \
-  -H "Authorization: Bearer $TOKEN"
-
-# 2. Wait a moment
-sleep 2
-
-# 3. Reset data
-curl -X POST http://127.0.0.1:8787/simulate/reset \
-  -H "Authorization: Bearer $TOKEN"
-
-# 4. Start new simulation
-curl -X POST http://127.0.0.1:8787/simulate \
-  -H "Authorization: Bearer $TOKEN"
+**Response (200) — inactive:**
+```json
+{ "active": false }
 ```
 
 ---
 
-## Response Formats
+### POST /simulate/replay
 
-### Success Response
+Start a read-only heatmap replay using Aurora data only. No DynamoDB writes. Same visualization as timelapse but without side effects.
 
-All successful responses include:
-
-```json
-{
-  "data": { /* response data */ },
-  "timestamp": "2024-02-15T14:30:00Z",
-  "request_id": "req-123abc-456def"
-}
+```bash
+curl -X POST http://localhost:8787/simulate/replay \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"window_interval_secs": 3}'
 ```
 
-### Error Response
-
-All error responses include:
-
+**Response (202):**
 ```json
-{
-  "error": {
-    "code": "INVALID_TOKEN",
-    "message": "JWT token is invalid or expired",
-    "details": "Token signature validation failed"
-  },
-  "timestamp": "2024-02-15T14:30:00Z",
-  "request_id": "req-123abc-456def"
-}
+{ "message": "Replay started" }
 ```
 
 ---
 
-## Error Handling
+### POST /simulate/replay-reset
 
-### HTTP Status Codes
-
-| Code | Meaning | Common Causes |
-|------|---------|---------------|
-| `200` | OK | Successful request |
-| `201` | Created | Resource created successfully |
-| `202` | Accepted | Request accepted (async operation) |
-| `400` | Bad Request | Invalid input, malformed JSON |
-| `401` | Unauthorized | Missing or invalid JWT token |
-| `404` | Not Found | Resource doesn't exist |
-| `409` | Conflict | Duplicate email or simulation already running |
-| `500` | Internal Error | Server error, database failure |
-
-### Error Codes
-
-| Code | HTTP Status | Description |
-|------|------------|-------------|
-| `INVALID_EMAIL` | 400 | Email format is invalid |
-| `INVALID_PASSWORD` | 400 | Password too short or invalid format |
-| `DUPLICATE_EMAIL` | 409 | Email already registered |
-| `INVALID_TOKEN` | 401 | JWT token invalid or expired |
-| `MISSING_TOKEN` | 401 | Authorization header missing |
-| `SIMULATION_RUNNING` | 400 | Cannot start simulation, one already running |
-| `DATABASE_ERROR` | 500 | Database connection or query failed |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
-
-### Error Response Example
+Clear the heatmap replay state. No data is deleted.
 
 ```bash
-curl -X GET http://127.0.0.1:8787/api/v1/me \
-  -H "Authorization: Bearer invalid_token"
+curl -X POST http://localhost:8787/simulate/replay-reset \
+  -H "Authorization: Bearer <token>"
 ```
 
+**Response (200):**
+```json
+{ "message": "Replay state cleared" }
+```
+
+---
+
+### GET /simulate/visitors
+
+Get today's visitors (patient names) grouped by clinic.
+
+```bash
+curl http://localhost:8787/simulate/visitors \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (200):**
 ```json
 {
-  "error": {
-    "code": "INVALID_TOKEN",
-    "message": "JWT token validation failed",
-    "details": "Token signature is invalid"
-  },
-  "timestamp": "2024-02-15T14:35:22Z",
-  "request_id": "req-789xyz-456abc"
+  "date": "2026-03-26",
+  "clinics": [
+    {
+      "clinic_id": "...",
+      "city": "Miami",
+      "state": "FL",
+      "visitors": [
+        { "first_name": "John", "last_name": "Smith", "appointment_time": "2026-03-26T09:30:00" },
+        { "first_name": "Jane", "last_name": "Doe", "appointment_time": "2026-03-26T10:15:00" }
+      ]
+    }
+  ]
 }
 ```
 
 ---
 
-## Rate Limiting
+## Admin Endpoints
 
-Currently, there is **no rate limiting** implemented.
+### POST /admin/init-db
 
-### Planned Rate Limiting
+**Destructive.** Drops the entire `vital_fold` schema (losing all simulation data) and recreates all 16 tables from `migrations/init.sql`. The `public.users` auth table is preserved (uses `CREATE TABLE IF NOT EXISTS`). In-memory simulation counts are reset.
 
-Future versions will implement:
+The SQL file is embedded into the binary at compile time via `include_str!`, so no filesystem access is required at runtime. Each statement is parsed and executed individually.
 
-- **Per-user rate limits**: 100 requests per minute
-- **Per-endpoint limits**: Simulation endpoints limited to 1 per minute per user
-- **Global limits**: 1000 requests per second across all users
-
-Rate limit headers will be included in response:
-
-```http
-X-RateLimit-Limit: 100
-X-RateLimit-Remaining: 98
-X-RateLimit-Reset: 1771895222
+```bash
+curl -X POST http://localhost:8787/admin/init-db \
+  -H "Authorization: Bearer <token>"
 ```
+
+**Response (200):**
+```json
+{ "message": "Schema initialized — 42 SQL statements executed" }
+```
+
+**Errors:**
+- `401` — Unauthorized
+- `500` — SQL execution failed (check server logs for the specific statement)
+
+The admin dashboard includes an "Init Database" button with a confirmation modal that invokes this endpoint.
 
 ---
 
-## Best Practices
+## Error Reference
 
-### Authentication
+All errors return JSON with an `error` field:
 
-✅ **Do:**
-- Store tokens securely (encrypted in localStorage or secure HTTP-only cookies)
-- Include token in `Authorization: Bearer` header
-- Refresh token by logging in again before expiration
-- Use HTTPS in production (never send tokens over HTTP)
+```json
+{ "error": "Description of what went wrong" }
+```
 
-❌ **Don't:**
-- Expose tokens in URLs
-- Store tokens in localStorage in sensitive apps
-- Commit tokens to version control
-- Reuse tokens across different applications
-
-### Error Handling
-
-✅ **Do:**
-- Check HTTP status code first
-- Parse error response for error code and message
-- Implement retry logic for 5xx errors
-- Log failed requests for debugging
-
-❌ **Don't:**
-- Ignore 401 errors (token may have expired)
-- Retry indefinitely without backoff
-- Expose error details to end users
-- Trust only HTTP status (check response body)
-
-### Performance
-
-✅ **Do:**
-- Poll `/simulate/status` instead of waiting
-- Use appropriate configuration values for data volume
-- Cache authentication tokens
-- Monitor database connection pool
-
-❌ **Don't:**
-- Continuously call endpoints in a loop (use polling with intervals)
-- Generate excessive data in single simulation (start smaller)
-- Make simultaneous requests for same resource
-- Ignore simulation completion (check status before next run)
+| Status | Meaning | Common Causes |
+|--------|---------|---------------|
+| `400` | Bad Request | Invalid date range, missing required fields, date overlap |
+| `401` | Unauthorized | Missing/expired/invalid JWT token, wrong credentials |
+| `404` | Not Found | User not found in database |
+| `409` | Conflict | A background task is already running, static data already exists |
+| `500` | Internal Server Error | Database connection failure, unexpected error |
 
 ---
 
-## Swagger/OpenAPI
+## Polling Pattern
 
-Interactive API documentation available at:
+All long-running operations (populate, simulate, reset) follow the same pattern:
 
-```
-http://127.0.0.1:8787/swagger-ui/
-```
-
-Click "Authorize" to enter JWT token, then test endpoints directly from browser.
-
-Raw OpenAPI specification:
-
-```
-http://127.0.0.1:8787/api-docs/openapi.json
-```
-
+1. **POST** to start the operation — receive `202 Accepted`
+2. **Poll** `GET /simulate/status` every 1-2 seconds
+3. Check `running == false` to know when complete
+4. Read progress fields (`populate_progress`, `reset_progress`, `dynamo_progress`) for real-time updates
+5. Read count fields to see final row counts

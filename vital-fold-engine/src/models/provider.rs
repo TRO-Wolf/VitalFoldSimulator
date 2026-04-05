@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Healthcare provider (physician, nurse, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Provider {
-    pub provider_id: Uuid,
+    pub provider_id: i64,
     pub first_name: String,
     pub last_name: String,
     /// Medical specialty (e.g., "Cardiologist", "Cardiac Surgeon")

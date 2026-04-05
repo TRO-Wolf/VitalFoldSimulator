@@ -2,101 +2,12 @@ use crate::config::Config;
 use crate::db::DbPool;
 use crate::errors::AppError;
 use crate::middleware::auth::generate_token;
-use crate::models::{AuthResponse, LoginRequest, RegisterRequest, User, UserProfile};
+use crate::models::{AuthResponse, LoginRequest, User, UserProfile};
 use actix_web::{web, HttpResponse};
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::verify;
 use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
-
-/// Register a new user.
-///
-/// # Request Body
-/// ```json
-/// {
-///   "email": "user@example.com",
-///   "password": "secure_password"
-/// }
-/// ```
-///
-/// # Returns
-/// * `201 Created` with JWT token and user profile on success
-/// * `400 Bad Request` if email already exists
-/// * `500 Internal Server Error` if hashing or database fails
-#[utoipa::path(
-    post,
-    path = "/api/v1/auth/register",
-    tag = "Authentication",
-    request_body = RegisterRequest,
-    responses(
-        (status = 201, description = "User registered successfully", body = AuthResponse),
-        (status = 400, description = "Invalid input or email already exists", body = String),
-        (status = 500, description = "Internal server error", body = String)
-    )
-)]
-pub async fn register(
-    pool: web::Data<DbPool>,
-    cfg: web::Data<Config>,
-    req: web::Json<RegisterRequest>,
-) -> Result<HttpResponse, AppError> {
-    // Validate the registration request
-    req.validate()?;
-
-    let email = req.email.trim().to_lowercase();
-
-    // Hash the password with bcrypt
-    let password_hash = hash(&req.password, DEFAULT_COST)
-        .map_err(|e| {
-            tracing::error!("Failed to hash password: {}", e);
-            AppError::Internal(format!("Password hashing failed: {}", e))
-        })?;
-
-    // Insert the new user
-    // Let the database enforce email uniqueness via UNIQUE constraint
-    let user_id = Uuid::new_v4();
-    let now = Utc::now();
-
-    sqlx::query(
-        "INSERT INTO public.users (id, email, password_hash, created_at) VALUES ($1, $2, $3, $4)"
-    )
-    .bind(user_id)
-    .bind(&email)
-    .bind(password_hash)
-    .bind(now)
-    .execute(pool.get_ref())
-    .await
-    .map_err(|e| {
-        // Check if this is a unique constraint violation
-        let error_msg = e.to_string();
-        if error_msg.contains("duplicate key") || error_msg.contains("unique constraint") {
-            tracing::info!("Registration attempt with duplicate email: {}", email);
-            AppError::BadRequest("Email already registered".to_string())
-        } else {
-            tracing::error!("Database error during registration: {}", e);
-            AppError::Database(error_msg)
-        }
-    })?;
-
-    // Generate JWT token
-    let token = generate_token(user_id, email.clone(), cfg.get_ref())?;
-
-    let user_profile = UserProfile {
-        id: user_id,
-        email,
-        created_at: now,
-    };
-
-    let response = AuthResponse {
-        token,
-        user: user_profile,
-    };
-
-    tracing::info!("User registered: {}", user_id);
-
-    Ok(HttpResponse::Created().json(response))
-}
-
-
 
 /// Login with email and password.
 ///

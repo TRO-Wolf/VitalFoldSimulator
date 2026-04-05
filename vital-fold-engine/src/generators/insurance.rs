@@ -17,16 +17,16 @@ use super::SimulationContext;
 fn gen_phone(rng: &mut impl Rng) -> String {
     format!(
         "+1-{}{}{}-{}{}{}-{}{}{}{}",
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
     )
 }
 
@@ -47,9 +47,9 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
 
     for company_name in INSURANCE_COMPANIES {
         let (phone, tax_id) = {
-            use rand::thread_rng;
-            let mut rng = thread_rng();
-            (gen_phone(&mut rng), rng.gen_range(100_000_000..999_999_999))
+            use rand::rng;
+            let mut rng = rng();
+            (gen_phone(&mut rng), rng.random_range(100_000_000..999_999_999))
         };
         let email = SafeEmail().fake::<String>();
 
@@ -87,17 +87,17 @@ pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(),
             let plan_name = format!("Plan {}", i + 1);
 
             let (deductible, copay, prior_auth, active) = {
-                use rand::thread_rng;
-                let mut rng = thread_rng();
+                use rand::rng;
+                let mut rng = rng();
                 (
-                    BigDecimal::from(rng.gen_range(250..2000)),
-                    BigDecimal::from(rng.gen_range(20..150)),
-                    rng.gen_bool(0.5),
-                    rng.gen_bool(0.8),
+                    BigDecimal::from(rng.random_range(250..2000)),
+                    BigDecimal::from(rng.random_range(20..150)),
+                    rng.random_bool(0.5),
+                    rng.random_bool(0.8),
                 )
             };
 
-            let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+            let start_date = NaiveDate::from_ymd_opt(2024, 1, 1).expect("2024-01-01 is a valid date");
 
             let result: (uuid::Uuid,) = sqlx::query_as(
                 "INSERT INTO vital_fold.insurance_plan (plan_name, company_id, deductible_amount, copay_amount, prior_auth_required, active_plan, active_start_date) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING insurance_plan_id"

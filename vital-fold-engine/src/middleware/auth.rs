@@ -89,7 +89,7 @@ pub fn validate_token(token: &str, secret: &str) -> Result<Claims, AppError> {
 /// # Returns
 /// * `Result<ServiceRequest, (Error, ServiceRequest)>` - The request with Claims inserted, or error with request
 pub async fn jwt_validator(
-    mut req: ServiceRequest,
+    req: ServiceRequest,
     credentials: BearerAuth,
 ) -> Result<ServiceRequest, (Error, ServiceRequest)> {
     // Extract config first, before any early returns

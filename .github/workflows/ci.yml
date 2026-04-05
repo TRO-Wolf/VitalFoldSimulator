@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    name: cargo check + test + clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vital-fold-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vital-fold-engine
+      - name: cargo check
+        run: cargo check --all-targets
+      - name: cargo test
+        run: cargo test --all-targets
+      - name: cargo clippy
+        run: cargo clippy --all-targets

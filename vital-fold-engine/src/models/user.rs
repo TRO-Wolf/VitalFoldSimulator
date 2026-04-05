@@ -15,43 +15,6 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-/// Request body for user registration.
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct RegisterRequest {
-    #[schema(example = "user@example.com")]
-    pub email: String,
-    #[schema(example = "SecurePassword123")]
-    pub password: String,
-}
-
-impl RegisterRequest {
-    /// Validate registration request.
-    ///
-    /// Checks:
-    /// - Email is not empty and contains @ and at least one .
-    /// - Password is at least 8 characters
-    pub fn validate(&self) -> Result<(), AppError> {
-        // Email validation: must have @ and . and at least 3 characters
-        let email = self.email.trim();
-        if email.is_empty() {
-            return Err(AppError::BadRequest("Email is required".to_string()));
-        }
-        if !email.contains('@') || !email.contains('.') || email.len() < 5 {
-            return Err(AppError::BadRequest("Invalid email format".to_string()));
-        }
-
-        // Password validation: minimum 8 characters
-        if self.password.is_empty() {
-            return Err(AppError::BadRequest("Password is required".to_string()));
-        }
-        if self.password.len() < 8 {
-            return Err(AppError::BadRequest("Password must be at least 8 characters".to_string()));
-        }
-
-        Ok(())
-    }
-}
-
 /// Request body for user login.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
@@ -80,7 +43,7 @@ impl LoginRequest {
     }
 }
 
-/// Response body for successful authentication (register or login).
+/// Response body for successful authentication.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AuthResponse {
     pub token: String,
@@ -119,4 +82,13 @@ pub struct SimulationStatusResponse {
     pub last_run: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub counts: crate::engine_state::SimulationCounts,
+    /// Present only while an Aurora reset is in progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_progress: Option<crate::engine_state::ResetProgress>,
+    /// Present only while a populate run is in progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub populate_progress: Option<crate::engine_state::PopulateProgress>,
+    /// Present only while a DynamoDB operation (reset or sync) is in progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamo_progress: Option<crate::engine_state::DynamoProgress>,
 }

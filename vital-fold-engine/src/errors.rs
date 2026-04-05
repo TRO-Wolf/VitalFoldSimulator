@@ -22,6 +22,10 @@ pub enum AppError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    /// Resource conflict (e.g., a run is already in progress)
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     /// Internal server error
     #[error("Internal server error")]
     Internal(String),
@@ -41,6 +45,7 @@ impl AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -52,6 +57,7 @@ impl AppError {
             AppError::NotFound(msg) => msg.clone(),
             AppError::Unauthorized(msg) => msg.clone(),
             AppError::BadRequest(msg) => msg.clone(),
+            AppError::Conflict(msg) => msg.clone(),
             AppError::Internal(_) => "Internal server error occurred".to_string(),
         }
     }

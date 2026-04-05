@@ -1,26 +1,55 @@
 use crate::errors::AppError;
 use rand::Rng;
+use rand::distr::weighted::WeightedIndex;
+use rand::distr::Distribution;
 use super::SimulationContext;
 
 /// Aurora DSQL maximum rows per transaction statement.
 /// Keep well under the 3000-row hard limit.
 const DSQL_BATCH_SIZE: usize = 2500;
 
+/// Metro area definitions matching the 10 clinics in CLINIC_DISTRIBUTION (clinic.rs).
+/// Each entry: (city, state_abbr, zip_prefix, population_weight).
+/// Weights approximate relative metro population so larger cities get more patients.
+/// Index order matches CLINIC_DISTRIBUTION exactly.
+pub(super) const METRO_AREAS: &[(&str, &str, &str, u32)] = &[
+    // idx 0: Charlotte, NC — metro pop ~2.7M
+    ("Charlotte",    "NC", "282", 12),
+    // idx 1: Asheville, NC — metro pop ~0.5M
+    ("Asheville",    "NC", "287",  3),
+    // idx 2: Atlanta, GA (clinic 1) — metro pop ~6.1M
+    ("Atlanta",      "GA", "303", 14),
+    // idx 3: Atlanta, GA (clinic 2)
+    ("Atlanta",      "GA", "303", 14),
+    // idx 4: Tallahassee, FL — metro pop ~0.4M
+    ("Tallahassee",  "FL", "323",  2),
+    // idx 5: Miami, FL (clinic 1) — metro pop ~6.2M
+    ("Miami",        "FL", "331", 14),
+    // idx 6: Miami, FL (clinic 2)
+    ("Miami",        "FL", "331", 14),
+    // idx 7: Orlando, FL — metro pop ~2.7M
+    ("Orlando",      "FL", "328", 12),
+    // idx 8: Jacksonville, FL (clinic 1) — metro pop ~1.7M
+    ("Jacksonville", "FL", "322",  8),
+    // idx 9: Jacksonville, FL (clinic 2)
+    ("Jacksonville", "FL", "322",  8),
+];
+
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
 /// Format: +1-NXX-NXX-XXXX (18 chars)
 fn gen_phone(rng: &mut impl Rng) -> String {
     format!(
         "+1-{}{}{}-{}{}{}-{}{}{}{}",
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(2..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
-        rng.gen_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(2..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
+        rng.random_range(0..=9),
     )
 }
 
@@ -42,22 +71,29 @@ struct PatientBatch {
     pt_phones:        Vec<String>,
     pt_emails:        Vec<String>,
     pt_reg_dates:     Vec<chrono::NaiveDate>,
+
+    /// Index into METRO_AREAS / clinic_ids for each patient's "home" clinic.
+    home_clinic_indices: Vec<usize>,
 }
 
 /// Build all patient + emergency contact row data in memory (no awaits).
 /// Returns the batch so the caller can drop all RNG state before awaiting.
-fn build_patient_batch(n: usize) -> PatientBatch {
+fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
     use fake::Fake;
     use fake::faker::name::en::{FirstName, LastName};
-    use fake::faker::address::en::{StreetName, CityName, StateAbbr, ZipCode};
+    use fake::faker::address::en::StreetName;
     use fake::faker::internet::en::SafeEmail;
     use chrono::Local;
-    use rand::thread_rng;
+    use rand::rng;
     use uuid::Uuid;
 
     let today = Local::now().naive_local().date();
-    let mut rng = thread_rng();
+    let mut rng = rng();
     let relationships = ["Spouse", "Parent", "Sibling", "Child", "Friend"];
+
+    // Build weighted distribution for home clinic assignment using configurable weights.
+    let dist = WeightedIndex::new(clinic_weights)
+        .unwrap_or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS).expect("default weights are valid"));
 
     let mut batch = PatientBatch {
         ec_ids:           Vec::with_capacity(n),
@@ -77,6 +113,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
         pt_phones:        Vec::with_capacity(n),
         pt_emails:        Vec::with_capacity(n),
         pt_reg_dates:     Vec::with_capacity(n),
+        home_clinic_indices: Vec::with_capacity(n),
     };
 
     for _ in 0..n {
@@ -86,7 +123,7 @@ fn build_patient_batch(n: usize) -> PatientBatch {
             if name != "Adolf" { break name; }
         });
         batch.ec_last_names.push(LastName().fake());
-        batch.ec_relationships.push(relationships[rng.gen_range(0..relationships.len())].to_string());
+        batch.ec_relationships.push(relationships[rng.random_range(0..relationships.len())].to_string());
         batch.ec_phones.push(gen_phone(&mut rng));
         batch.ec_emails.push(SafeEmail().fake());
 
@@ -95,12 +132,18 @@ fn build_patient_batch(n: usize) -> PatientBatch {
             if name != "Adolf" { break name; }
         });
         batch.pt_last_names.push(LastName().fake());
-        let days_back = (18 * 365) + rng.gen_range(0..(62 * 365)) as i64;
+        let days_back = (18 * 365) + rng.random_range(0..(62 * 365)) as i64;
         batch.pt_dobs.push(today - chrono::TimeDelta::days(days_back));
+
+        // Assign patient to a home metro area proportional to population weight.
+        let metro_idx = dist.sample(&mut rng);
+        let (city, state, zip_prefix, _) = METRO_AREAS[metro_idx];
         batch.pt_streets.push(StreetName().fake());
-        batch.pt_cities.push(CityName().fake());
-        batch.pt_states.push(StateAbbr().fake());
-        batch.pt_zips.push(ZipCode().fake());
+        batch.pt_cities.push(city.to_string());
+        batch.pt_states.push(state.to_string());
+        batch.pt_zips.push(format!("{}{:02}", zip_prefix, rng.random_range(0..100u32)));
+        batch.home_clinic_indices.push(metro_idx);
+
         batch.pt_phones.push(gen_phone(&mut rng));
         batch.pt_emails.push(SafeEmail().fake());
         batch.pt_reg_dates.push(today);
@@ -115,20 +158,20 @@ fn build_patient_batch(n: usize) -> PatientBatch {
 /// per-transaction limit. Emergency contact UUIDs are pre-generated client-side
 /// so patients can reference them without a per-row UPDATE.
 pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    let n = ctx.config.patients;
+    let n: usize = ctx.config.patients;
 
     // Generate all row data synchronously — rng is dropped before any await.
-    let batch = build_patient_batch(n);
+    let batch: PatientBatch = build_patient_batch(n, &ctx.config.clinic_weights);
 
     // Process in chunks to respect the DSQL 3000-row per-transaction limit.
     for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
-        let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(n);
+        let chunk_end: usize = (chunk_start + DSQL_BATCH_SIZE).min(n);
         let chunk_size = chunk_end - chunk_start;
         let r = chunk_start..chunk_end;
 
         // Bulk INSERT emergency contacts for this chunk — one round-trip.
-        let ec_ids_chunk    = &batch.ec_ids[r.clone()];
-        let ec_placeholder  = ec_ids_chunk; // temp patient_id, fixed in UPDATE below
+        let ec_ids_chunk: &[uuid::Uuid] = &batch.ec_ids[r.clone()];
+        let ec_placeholder: &[uuid::Uuid]  = ec_ids_chunk; // temp patient_id, fixed in UPDATE below
 
         sqlx::query(
             "INSERT INTO vital_fold.emergency_contact \
@@ -148,7 +191,10 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
         ctx.counts.emergency_contacts += chunk_size;
 
         // Bulk INSERT patients for this chunk — one round-trip.
-        let ec_id_strs: Vec<String> = ec_ids_chunk.iter().map(|id| id.to_string()).collect();
+        let ec_id_strs: Vec<String> = ec_ids_chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
 
         let patient_rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "INSERT INTO vital_fold.patient \
@@ -188,6 +234,7 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
 
         // Populate context for downstream generators.
         ctx.patient_ids.extend_from_slice(&real_patient_ids);
+        ctx.patient_home_clinics.extend_from_slice(&batch.home_clinic_indices[r.clone()]);
         ctx.patient_data.extend(
             real_patient_ids.into_iter()
                 .zip(batch.pt_first_names[r.clone()].iter().cloned())
@@ -219,11 +266,11 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
 
     // Build all column vecs synchronously so rng is dropped before any await.
     let (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v) = {
-        use rand::thread_rng;
+        use rand::rng;
 
         let ethnicities = ["Caucasian", "African American", "Hispanic", "Asian", "Other"];
         let genders     = ["Male", "Female", "Other"];
-        let mut rng     = thread_rng();
+        let mut rng     = rng();
 
         let mut pt_ids:        Vec<uuid::Uuid>       = Vec::with_capacity(n);
         let mut first_names:   Vec<String>            = Vec::with_capacity(n);
@@ -236,7 +283,7 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
 
         for (patient_id, first_name, last_name, dob) in &ctx.patient_data {
             let age = (today - *dob).num_days() / 365;
-            let ssn = format!("{:03}-{:02}-{:04}", rng.gen_range(0..1000), rng.gen_range(0..100), rng.gen_range(0..10000));
+            let ssn = format!("{:03}-{:02}-{:04}", rng.random_range(0..1000), rng.random_range(0..100), rng.random_range(0..10000));
 
             pt_ids.push(*patient_id);
             first_names.push(first_name.clone());
@@ -244,8 +291,8 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
             dobs.push(*dob);
             ages.push(age);
             ssns.push(ssn);
-            ethnicities_v.push(ethnicities[rng.gen_range(0..ethnicities.len())].to_string());
-            genders_v.push(genders[rng.gen_range(0..genders.len())].to_string());
+            ethnicities_v.push(ethnicities[rng.random_range(0..ethnicities.len())].to_string());
+            genders_v.push(genders[rng.random_range(0..genders.len())].to_string());
         }
 
         (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v)
@@ -288,9 +335,9 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
 
     // Build column vecs synchronously so rng is dropped before any await.
     let (pt_ids, plan_ids, policy_nums, starts, ends) = {
-        use rand::thread_rng;
+        use rand::rng;
 
-        let mut rng = thread_rng();
+        let mut rng = rng();
 
         let mut pt_ids:      Vec<uuid::Uuid>                = Vec::with_capacity(n);
         let mut plan_ids:    Vec<uuid::Uuid>                = Vec::with_capacity(n);
@@ -299,18 +346,21 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
         let mut ends:        Vec<Option<chrono::NaiveDate>> = Vec::with_capacity(n);
 
         for &patient_id in &ctx.patient_ids {
-            let plan_id = ctx.plan_ids[rng.gen_range(0..ctx.plan_ids.len())];
-            let policy  = format!("POL-{:08X}", rng.gen::<u32>());
-            let end     = if rng.gen_bool(0.2) {
-                Some(today - chrono::TimeDelta::days(rng.gen_range(30..365)))
+            let plan_id = ctx.plan_ids[rng.random_range(0..ctx.plan_ids.len())];
+            let policy  = format!("POL-{:08X}", rng.random::<u32>());
+            let end     = if rng.random_bool(0.2) {
+                Some(today - chrono::TimeDelta::days(rng.random_range(30..365)))
             } else {
                 None
             };
 
+            // Coverage start: random date within the past year
+            let start = today - chrono::TimeDelta::days(rng.random_range(0..365));
+
             pt_ids.push(patient_id);
             plan_ids.push(plan_id);
             policy_nums.push(policy);
-            starts.push(today);
+            starts.push(start);
             ends.push(end);
         }
 

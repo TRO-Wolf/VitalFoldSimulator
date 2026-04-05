@@ -70,8 +70,8 @@ cargo run
 # Health check
 curl http://127.0.0.1:8787/health
 
-# Register user
-curl -X POST http://127.0.0.1:8787/api/v1/auth/register \
+# Login
+curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"TestPassword123"}'
 

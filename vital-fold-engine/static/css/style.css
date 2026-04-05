@@ -1,0 +1,500 @@
+/* VitalFold Engine — Custom Styles */
+
+/* Layout */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 768px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Login page centering */
+.login-wrapper {
+  max-width: 420px;
+  margin: 4rem auto 0;
+}
+
+/* Tab bar for login/register toggle */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.5rem;
+}
+
+.tab-bar button {
+  flex: 1;
+  border-radius: 0;
+  margin-bottom: 0;
+}
+
+.tab-bar button:first-child {
+  border-radius: var(--pico-border-radius) 0 0 var(--pico-border-radius);
+}
+
+.tab-bar button:last-child {
+  border-radius: 0 var(--pico-border-radius) var(--pico-border-radius) 0;
+}
+
+.tab-bar button.outline {
+  opacity: 0.6;
+}
+
+/* Status dot */
+.dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.dot--running {
+  background-color: #2ecc71;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.dot--idle {
+  background-color: #95a5a6;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.15); }
+}
+
+/* Status card layout */
+.status-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+/* Count table */
+.count-value {
+  text-align: right;
+  font-family: monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Controls */
+.controls-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.controls-group button {
+  margin-bottom: 0;
+}
+
+.btn-danger {
+  --pico-background-color: #e74c3c;
+  --pico-border-color: #e74c3c;
+  --pico-color: #fff;
+}
+
+.btn-danger:hover {
+  --pico-background-color: #c0392b;
+  --pico-border-color: #c0392b;
+}
+
+.outline.btn-danger {
+  --pico-background-color: transparent;
+  --pico-color: #e74c3c;
+}
+
+.outline.btn-danger:hover {
+  --pico-background-color: #e74c3c;
+  --pico-color: #fff;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+
+.modal-overlay article {
+  max-width: 480px;
+  width: 90%;
+  margin: 0;
+}
+
+.modal-overlay footer {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.modal-overlay footer button {
+  margin-bottom: 0;
+  width: auto;
+}
+
+/* Nav adjustments */
+nav .nav-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+nav .nav-right button {
+  margin-bottom: 0;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+/* Error message */
+.error-msg {
+  color: #e74c3c;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+
+/* Admin link */
+.admin-link {
+  text-align: center;
+  margin-top: 1rem;
+  font-size: 0.875rem;
+}
+
+.admin-link a {
+  cursor: pointer;
+}
+
+/* Heatmap */
+.heatmap-container {
+  text-align: center;
+}
+
+.heatmap-canvas {
+  width: 100%;
+  max-width: 500px;
+  aspect-ratio: 1;
+  border-radius: var(--pico-border-radius);
+}
+
+.heatmap-progress {
+  height: 4px;
+  background: rgba(100, 120, 140, 0.3);
+  border-radius: 2px;
+  margin: 0.75rem 0 0.5rem;
+  overflow: hidden;
+}
+
+.heatmap-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3498db, #e67e22);
+  border-radius: 2px;
+  transition: width 1s ease;
+}
+
+.heatmap-day-label {
+  font-size: 0.8rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+/* Nav active link */
+nav a.nav-active {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* Visitor page */
+.visitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.visitor-clinic-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 1rem;
+}
+
+.visitor-clinic-name {
+  margin: 0 0 0.15rem;
+  font-size: 0.95rem;
+}
+
+.visitor-clinic-location {
+  color: var(--pico-muted-color);
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.visitor-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.visitor-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.2rem 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.visitor-list li:last-child {
+  border-bottom: none;
+}
+
+.visitor-name {
+  font-weight: 500;
+}
+
+.visitor-hour {
+  color: var(--pico-muted-color);
+  font-family: monospace;
+  font-size: 0.8rem;
+}
+
+.visitor-count {
+  color: var(--pico-muted-color);
+  font-style: italic;
+}
+
+/* Reset progress */
+.reset-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.reset-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.reset-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.reset-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.reset-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* Populate progress */
+.populate-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.populate-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.populate-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.populate-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.populate-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* DynamoDB progress (reset + sync) */
+.dynamo-progress {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.dynamo-progress header {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.dynamo-progress progress {
+  margin-bottom: 0.5rem;
+}
+
+.dynamo-progress-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+  font-family: monospace;
+}
+
+.dynamo-complete {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+/* ===== Populate Calendar ===== */
+
+.populate-calendar {
+  margin: 0.75rem 0 1rem;
+}
+
+.calendar-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.calendar-nav-btn {
+  margin: 0;
+  padding: 0.4rem 0.9rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+
+.calendar-header {
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pico-muted-color);
+  padding: 0.25rem 0 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.calendar-day {
+  text-align: center;
+  padding: 0.45rem 0.2rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.calendar-day--clickable {
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.calendar-day--clickable:hover {
+  background: rgba(52, 152, 219, 0.2);
+  transform: scale(1.08);
+}
+
+.calendar-day--clickable:active {
+  transform: scale(0.95);
+  background: rgba(52, 152, 219, 0.3);
+}
+
+.calendar-day--today {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 0 var(--pico-primary);
+}
+
+.calendar-day--populated {
+  background: rgba(46, 204, 113, 0.2);
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+.calendar-day--selected {
+  background: rgba(52, 152, 219, 0.2);
+  color: #3498db;
+}
+
+.calendar-day--range-end {
+  background: #3498db;
+  color: #fff;
+  font-weight: 600;
+}
+
+.calendar-day--conflict {
+  background: rgba(231, 76, 60, 0.25);
+  color: #e74c3c;
+  font-weight: 600;
+  outline: 2px solid #e74c3c;
+  outline-offset: -1px;
+}
+
+.calendar-day--outside {
+  opacity: 0.2;
+}
+
+/* Date range display below calendar */
+.date-range-display {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.date-range-display label {
+  flex: 1;
+  margin-bottom: 0;
+  padding: 0.25rem;
+  border-radius: 6px;
+  transition: outline 0.15s;
+}
+
+.date-range-display label.date-range-active {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+}
+
+.date-range-display input {
+  margin-bottom: 0;
+}
+
+.date-range-arrow {
+  font-size: 1.25rem;
+  color: var(--pico-muted-color);
+  padding-top: 1.25rem;
+}
+
+/* Article spacing */
+article {
+  margin-bottom: 1rem;
+}
+
+article header {
+  font-weight: 600;
+}

@@ -17,19 +17,6 @@ target/
 # Uncomment if you use `cargo sqlx prepare` (offline mode)
 # .sqlx/
 
-# ─── DuckDB ──────────────────────────────────────────────────────────────────
-*.duckdb
-*.duckdb.wal
-
-# ─── Polars / Data files ──────────────────────────────────────────────────────
-*.parquet
-*.arrow
-*.ipc
-*.csv
-*.json
-# Re-allow schema/fixture JSON if needed:
-!health_clinic_schema.sql
-
 # ─── IDE & Editor ─────────────────────────────────────────────────────────────
 .vscode/
 !.vscode/extensions.json
@@ -61,3 +48,9 @@ docker-compose.override.yml
 # ─── Misc ─────────────────────────────────────────────────────────────────────
 dist/
 out/
+
+# ─── Internal / AI context ───────────────────────────────────────────────────
+.claude/
+
+# ─── DB IDE session files ────────────────────────────────────────────────────
+*.session.sql

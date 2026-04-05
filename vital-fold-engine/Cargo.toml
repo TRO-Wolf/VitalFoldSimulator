@@ -2,10 +2,16 @@
 name = "vital-fold-engine"
 version = "0.1.0"
 edition = "2021"
+authors = ["John Huntley <johnhuntley42@gmail.com>"]
+description = "Synthetic healthcare data generation and simulation engine for cardiac clinic pipelines. Populates Amazon Aurora DSQL and DynamoDB with realistic provider, patient, visit, RVU billing, and survey data."
+license = "MIT"
+repository = "https://github.com/TRO-Wolf/VitalFoldSimulator"
+readme = "../README.md"
 
 [dependencies]
 actix-web = "4"
 actix-web-httpauth = "0.8"
+actix-files = "0.6"
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8.6", features = [
     "postgres", "runtime-tokio-rustls",
@@ -37,3 +43,9 @@ aws-credential-types = "1"
 utoipa = { version = "5", features = ["actix_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["actix-web"] }
 utoipa-actix-web = "0.1"
+
+# ─── Release Profile ────────────────────────────────────────────────────────
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
