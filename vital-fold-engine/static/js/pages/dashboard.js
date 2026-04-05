@@ -26,6 +26,9 @@ const AURORA_FIELDS = [
   { key: 'medical_records', label: 'Medical Records' },
   { key: 'patient_visits', label: 'Patient Visits' },
   { key: 'patient_vitals', label: 'Patient Vitals' },
+  { key: 'surveys', label: 'Surveys' },
+  { key: 'cpt_codes', label: 'CPT Codes' },
+  { key: 'appointment_cpt', label: 'Billing (CPT/RVU)' },
 ];
 
 const DYNAMO_FIELDS = [

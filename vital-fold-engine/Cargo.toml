@@ -2,6 +2,11 @@
 name = "vital-fold-engine"
 version = "0.1.0"
 edition = "2021"
+authors = ["John Huntley <johnhuntley42@gmail.com>"]
+description = "Synthetic healthcare data generation and simulation engine for cardiac clinic pipelines. Populates Amazon Aurora DSQL and DynamoDB with realistic provider, patient, visit, RVU billing, and survey data."
+license = "MIT"
+repository = "https://github.com/TRO-Wolf/VitalFoldSimulator"
+readme = "../README.md"
 
 [dependencies]
 actix-web = "4"

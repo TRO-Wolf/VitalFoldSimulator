@@ -10,12 +10,15 @@ mod errors;
 mod generators;
 mod handlers;
 mod middleware;
+// Model structs are deserialization contracts (sqlx::FromRow) —
+// they're populated from query results even when not constructed
+// by application code, so dead_code is expected here.
+#[allow(dead_code)]
 mod models;
 mod routes;
 
-use actix_web::{web, App, HttpServer, middleware::Logger};
+use actix_web::{web, App, HttpServer};
 use engine_state::SimulatorState;
-use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;

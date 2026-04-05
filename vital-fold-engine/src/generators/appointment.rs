@@ -198,7 +198,7 @@ pub async fn generate_appointments_by_day(
     clinic_weights: &[u32],
 ) -> Result<Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)>, AppError> {
     use rand::{rng, Rng};
-    use rand::distr::{Distribution, weighted::WeightedIndex};
+    
     use super::SLOTS_PER_PROVIDER;
 
     let span = (end_date - start_date).num_days() + 1;

@@ -1,6 +1,6 @@
 # VitalFold Engine — API Reference
 
-Complete reference for all 21 REST endpoints. Interactive Swagger UI is also available at `/swagger-ui/` when the server is running.
+Complete reference for all 22 REST endpoints. Interactive Swagger UI is also available at `/swagger-ui/` when the server is running.
 
 **Base URL:** `http://localhost:8787` (default)
 
@@ -196,7 +196,7 @@ Appointment volume is auto-calculated: providers × 36 slots/day, distributed by
 
 **Response (202):**
 ```json
-{ "message": "Dynamic populate started for 2026-04-01 to 2026-04-30 (5 steps)" }
+{ "message": "Dynamic populate started for 2026-04-01 to 2026-04-30 (7 steps)" }
 ```
 
 **Errors:**
@@ -518,7 +518,7 @@ curl http://localhost:8787/simulate/visitors \
 
 ### POST /admin/init-db
 
-**Destructive.** Drops the entire `vital_fold` schema (losing all simulation data) and recreates all 13 tables from `migrations/init.sql`. The `public.users` auth table is preserved (uses `CREATE TABLE IF NOT EXISTS`). In-memory simulation counts are reset.
+**Destructive.** Drops the entire `vital_fold` schema (losing all simulation data) and recreates all 16 tables from `migrations/init.sql`. The `public.users` auth table is preserved (uses `CREATE TABLE IF NOT EXISTS`). In-memory simulation counts are reset.
 
 The SQL file is embedded into the binary at compile time via `include_str!`, so no filesystem access is required at runtime. Each statement is parsed and executed individually.
 

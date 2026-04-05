@@ -200,15 +200,17 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 
 /// Generate patient_visit + patient_vitals for a set of appointments (standalone).
 /// Used by `run_date_range_simulate` and `run_populate_dynamic`.
-/// Returns (visit_count, vitals_count).
+/// Returns (visit_ids, ekg_flags, vitals_count). `ekg_flags[i]` aligns 1:1
+/// with `appointments[i]` so the downstream RVU generator can bill CPT 93000
+/// for visits where the EKG was performed.
 pub async fn generate_visits_for_appointments(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],
-) -> Result<(usize, usize), AppError> {
+) -> Result<(Vec<Uuid>, Vec<bool>, usize), AppError> {
     use rand::{rng, Rng};
 
     let total = appointments.len();
-    if total == 0 { return Ok((0, 0)); }
+    if total == 0 { return Ok((Vec::new(), Vec::new(), 0)); }
 
     let (
         appointment_ids, patient_ids, clinic_ids, provider_ids,
@@ -288,7 +290,6 @@ pub async fn generate_visits_for_appointments(
 
     // INSERT 1: patient_visit rows (with RETURNING to capture generated UUIDs).
     let mut visit_ids: Vec<Uuid> = Vec::with_capacity(total);
-    let mut visit_count = 0usize;
 
     for chunk_start in (0..total).step_by(DSQL_BATCH_SIZE) {
         let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(total);
@@ -317,7 +318,6 @@ pub async fn generate_visits_for_appointments(
         .fetch_all(pool)
         .await?;
 
-        visit_count += rows.len();
         visit_ids.extend(rows.into_iter().map(|(id,)| id));
     }
 
@@ -358,7 +358,7 @@ pub async fn generate_visits_for_appointments(
 
     tracing::info!(
         "Generated {} patient_visit + {} patient_vitals rows for date range",
-        visit_count, vitals_count
+        visit_ids.len(), vitals_count
     );
-    Ok((visit_count, vitals_count))
+    Ok((visit_ids, ekg_usages, vitals_count))
 }

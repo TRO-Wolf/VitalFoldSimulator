@@ -25,7 +25,7 @@ Aurora DSQL:                       Aurora DSQL:                       DynamoDB:
  • 10 clinics (SE US)                • Medical records
  • 50 providers                      • Patient visits                  Reads Aurora, writes DynamoDB.
  • 50,000 patients                   • Patient vitals                  No Aurora generation.
- • Emergency contacts
+ • Emergency contacts                 • Surveys (~30% of visits)
  • Demographics                    Date-dependent data for a
  • Insurance links                 configurable date range.
                                    Requires Phase 1 first.
@@ -39,7 +39,7 @@ All phases are **fire-and-poll**: POST returns `202 Accepted`, work runs in a ba
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-org/vitalFoldEngine.git
+git clone https://github.com/TRO-Wolf/VitalFoldSimulator.git
 cd vitalFoldEngine/vital-fold-engine
 cp .env.example .env          # Edit with your DSQL endpoint + JWT secret
 cargo build --release
@@ -225,13 +225,33 @@ Patients, providers, and appointments are distributed across clinics by configur
 - `provider.provider_id` and `clinic.clinic_id` are **BIGINT** identity columns with `CACHE 1` (small tables, tight ordering)
 - All other IDs (`patient_id`, `appointment_id`, etc.) remain **UUID**
 
+### Surveys
+
+Roughly **30% of patient visits** also generate a `vital_fold.survey` row containing `gene_prissy_score` (1–10), `experience_score` (1–10), and an optional `feedback_comments` free-text field. Surveys are the 6th step of `POST /populate/dynamic`. The intent is a gold-layer aggregation like `AVG(gene_prissy_score) GROUP BY provider_id` as a provider-quality metric.
+
+### RVU / Productivity Metrics
+
+Every appointment automatically generates **billing line-items** in `vital_fold.appointment_cpt` during dynamic populate — the industry-standard US healthcare productivity grain:
+- `vital_fold.cpt_code` — reference table seeded by `POST /admin/init-db` with 12 common E/M + EKG CPT codes and their CY2024 work / PE / MP RVU values.
+- `vital_fold.appointment_cpt` — line-item fact table: 1 E/M code per appointment (cardiology-weighted distribution, 99213/99214 dominant), plus a second row for CPT 93000 when `ekg_usage = true`. Each row snapshots the RVU components, Medicare conversion factor ($32.7442 for CY2024), and expected amount.
+
+Gold-layer rollup:
+```sql
+SELECT provider_id,
+       date_trunc('month', service_date) AS month,
+       SUM(work_rvu_snapshot * units) AS total_wrvu,
+       SUM(expected_amount)           AS expected_revenue
+FROM vital_fold.appointment_cpt
+GROUP BY provider_id, month;
+```
+
 ---
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [API Reference](vital-fold-engine/API.md) | All 21 endpoints with curl examples and response shapes |
+| [API Reference](vital-fold-engine/API.md) | All 22 endpoints with curl examples and response shapes |
 | [Architecture](vital-fold-engine/ARCHITECTURE.md) | System design, data flow, module structure |
 | [Development Guide](vital-fold-engine/DEVELOPMENT.md) | Local dev setup, code style, adding features |
 | [Installation](vital-fold-engine/INSTALLATION.md) | Setup, deployment (Render, Docker), troubleshooting |
@@ -240,7 +260,7 @@ Patients, providers, and appointments are distributed across clinics by configur
 | [Frontend Architecture](docs/frontend.md) | SPA components, routing, state management |
 | [DynamoDB Schema](docs/dynamo.md) | Table design, write strategy, TTL, capacity |
 | [Data Models](docs/models-spec.md) | Rust struct definitions for all database tables |
-| [Aurora Schema](docs/health_clinic_schema.sql) | Full DDL for 13 Aurora DSQL tables |
+| [Aurora Schema](vital-fold-engine/migrations/init.sql) | Full DDL for all 16 Aurora DSQL tables |
 | [Changelog](CHANGELOG.md) | Release history and change log |
 
 ---

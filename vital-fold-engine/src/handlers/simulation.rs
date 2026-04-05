@@ -475,12 +475,16 @@ pub async fn get_populated_dates_handler(
 }
 
 /// Dynamic-only tables for reset (FK-safe deletion order).
+/// survey is deleted before patient_visit because it logically references
+/// patient_visit_id (even though Aurora DSQL does not enforce FKs).
 const DYNAMIC_RESET_TABLES: &[(&str, &str, &str)] = &[
-    ("vital_fold.patient_vitals",  "patient_visit_id",  "Patient Vitals"),
-    ("vital_fold.patient_visit",   "patient_visit_id",  "Patient Visits"),
-    ("vital_fold.medical_record",  "medical_record_id", "Medical Records"),
-    ("vital_fold.appointment",     "appointment_id",    "Appointments"),
-    ("vital_fold.clinic_schedule", "schedule_id",       "Clinic Schedules"),
+    ("vital_fold.survey",          "survey_id",          "Surveys"),
+    ("vital_fold.appointment_cpt", "appointment_cpt_id", "Billing (CPT/RVU)"),
+    ("vital_fold.patient_vitals",  "patient_visit_id",   "Patient Vitals"),
+    ("vital_fold.patient_visit",   "patient_visit_id",   "Patient Visits"),
+    ("vital_fold.medical_record",  "medical_record_id",  "Medical Records"),
+    ("vital_fold.appointment",     "appointment_id",     "Appointments"),
+    ("vital_fold.clinic_schedule", "schedule_id",        "Clinic Schedules"),
 ];
 
 /// Delete only dynamic data (schedules, appointments, records, visits),
@@ -907,8 +911,8 @@ pub async fn get_db_counts(
 ) -> Result<HttpResponse, AppError> {
     use crate::engine_state::SimulationCounts;
 
-    // Single round-trip: 13 scalar sub-selects.
-    let row: (i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(
+    // Single round-trip: 16 scalar sub-selects.
+    let row: (i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(
         "SELECT \
             (SELECT COUNT(*) FROM vital_fold.insurance_company),  \
             (SELECT COUNT(*) FROM vital_fold.insurance_plan),     \
@@ -922,7 +926,10 @@ pub async fn get_db_counts(
             (SELECT COUNT(*) FROM vital_fold.appointment),        \
             (SELECT COUNT(*) FROM vital_fold.medical_record),     \
             (SELECT COUNT(*) FROM vital_fold.patient_visit),      \
-            (SELECT COUNT(*) FROM vital_fold.patient_vitals)"
+            (SELECT COUNT(*) FROM vital_fold.patient_vitals),     \
+            (SELECT COUNT(*) FROM vital_fold.survey),             \
+            (SELECT COUNT(*) FROM vital_fold.cpt_code),           \
+            (SELECT COUNT(*) FROM vital_fold.appointment_cpt)"
     )
     .fetch_one(pool.get_ref())
     .await?;
@@ -947,6 +954,9 @@ pub async fn get_db_counts(
         medical_records:       row.10 as usize,
         patient_visits:        row.11 as usize,
         patient_vitals:        row.12 as usize,
+        surveys:               row.13 as usize,
+        cpt_codes:             row.14 as usize,
+        appointment_cpt:       row.15 as usize,
         dynamo_patient_visits: dyn_visits,
         dynamo_patient_vitals: dyn_vitals,
     };
@@ -1337,12 +1347,18 @@ pub async fn reset_data(
 }
 
 /// Table display names for the reset progress UI (matches FK-safe deletion order).
+/// survey is deleted before patient_visit because it logically references
+/// patient_visit_id (even though Aurora DSQL does not enforce FKs).
+/// appointment_cpt is deleted before appointment + cpt_code for the same reason.
 const RESET_TABLES: &[(&str, &str, &str)] = &[
+    ("vital_fold.survey",               "survey_id",             "Surveys"),
+    ("vital_fold.appointment_cpt",      "appointment_cpt_id",    "Billing (CPT/RVU)"),
     ("vital_fold.patient_vitals",       "patient_visit_id",      "Patient Vitals"),
     ("vital_fold.patient_visit",        "patient_visit_id",      "Patient Visits"),
     ("vital_fold.medical_record",       "medical_record_id",     "Medical Records"),
     ("vital_fold.appointment",          "appointment_id",        "Appointments"),
     ("vital_fold.clinic_schedule",      "schedule_id",           "Clinic Schedules"),
+    ("vital_fold.cpt_code",             "cpt_code_id",           "CPT Codes"),
     ("vital_fold.patient_insurance",    "patient_insurance_id",  "Patient Insurance"),
     ("vital_fold.patient_demographics", "demographics_id",       "Demographics"),
     ("vital_fold.emergency_contact",    "emergency_contact_id",  "Emergency Contacts"),
@@ -1733,6 +1749,16 @@ pub async fn init_database(
 
     // Split on semicolons and execute each non-empty statement.
     // Strip SQL comments (lines starting with --) before checking if a statement is empty.
+    //
+    // Aurora DSQL quirk: `CREATE INDEX ASYNC` returns immediately but the
+    // underlying index build runs in the background and briefly holds a
+    // schema lock. A DML statement that arrives during that window gets
+    // rejected with OC001 ("schema has been updated by another transaction").
+    // We retry OC000/OC001 with exponential backoff — matches the pattern
+    // used by run_aurora_reset / run_dynamic_reset elsewhere in this file.
+    const MAX_RETRIES: u32 = 6;
+    const BACKOFF_BASE_MS: u64 = 250;
+
     let mut executed = 0usize;
     for statement in sql.split(';') {
         let cleaned: String = statement.lines()
@@ -1743,13 +1769,29 @@ pub async fn init_database(
         if trimmed.is_empty() {
             continue;
         }
-        sqlx::query(trimmed)
-            .execute(pool.get_ref())
-            .await
-            .map_err(|e| {
-                tracing::error!("Init DB failed on statement: {}", &trimmed[..trimmed.len().min(120)]);
-                AppError::Internal(format!("Schema init failed: {}", e))
-            })?;
+
+        let mut attempt: u32 = 0;
+        loop {
+            match sqlx::query(trimmed).execute(pool.get_ref()).await {
+                Ok(_) => break,
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    let is_oc_retry = msg.contains("OC000") || msg.contains("OC001");
+                    attempt += 1;
+                    if is_oc_retry && attempt <= MAX_RETRIES {
+                        let delay_ms = BACKOFF_BASE_MS * (1u64 << (attempt - 1));
+                        tracing::warn!(
+                            "Init DB OC retry on statement '{}...' (attempt {}/{}), sleeping {}ms",
+                            &trimmed[..trimmed.len().min(80)], attempt, MAX_RETRIES, delay_ms
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                        continue;
+                    }
+                    tracing::error!("Init DB failed on statement: {}", &trimmed[..trimmed.len().min(120)]);
+                    return Err(AppError::Internal(format!("Schema init failed: {}", e)));
+                }
+            }
+        }
         executed += 1;
     }
 

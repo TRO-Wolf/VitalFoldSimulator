@@ -7,7 +7,38 @@
 
 ## [Unreleased] — feature/web (uncommitted)
 
-**BIGINT Identity Migration + Provider-Driven Appointments + Schema Consolidation + Documentation Sync**
+**Survey Generator + RVU Generator + BIGINT Identity Migration + Provider-Driven Appointments + Schema Consolidation + Documentation Sync**
+
+### RVU Generator (2026-04-05)
+- Merged `migrations/rvu.sql` into `migrations/init.sql` as sections 15 (`cpt_code`) and 16 (`appointment_cpt`); standalone `rvu.sql` deleted so a single `POST /admin/init-db` creates everything.
+- Added `src/generators/rvu.rs` with `generate_appointment_cpt`: every appointment produces 1 E/M line-item drawn from a cardiology-weighted distribution (99213 40%, 99214 35%, 99212/99215 10% each, 99211/99204/99203 trailing), and EKG visits produce a second line-item for CPT 93000.
+- Wired as Step 7 of `run_populate_dynamic`; bumped `DYNAMIC_TOTAL_STEPS` 6→7, added `"Billing (CPT / RVU)"` to step names.
+- `visit::generate_visits_for_appointments` return tuple extended to `(Vec<Uuid>, Vec<bool>, usize)` so the existing `ekg_usages` flags propagate to the RVU step without an extra DB round-trip.
+- Each row snapshots `work_rvu_snapshot`, `pe_rvu_snapshot`, `mp_rvu_snapshot`, `total_rvu_snapshot`, CY2024 `conversion_factor` ($32.7442), and `expected_amount` (rounded to 2dp).
+- Added `cpt_codes: usize` and `appointment_cpt: usize` to `SimulationCounts` — flows through `/simulate/status` and `/simulate/db-counts` automatically.
+- Dashboard shows new `CPT Codes` and `Billing (CPT/RVU)` rows.
+- `appointment_cpt` added to `DYNAMIC_RESET_TABLES` (before `appointment`) and `RESET_TABLES`; `cpt_code` added to `RESET_TABLES` only (preserved by dynamic reset).
+- Gold-layer rollup target: `SUM(work_rvu_snapshot * units) GROUP BY provider_id, date_trunc('month', service_date)` — the industry-standard US healthcare productivity metric.
+
+
+### Survey Generator (2026-04-05)
+- Added `vital_fold.survey` table (1:1 optional with `patient_visit`) with columns: `survey_id`, `patient_visit_id`, `gene_prissy_score`, `experience_score`, `feedback_comments`, `creation_time`
+- Added `src/generators/survey.rs` — generates survey rows for ~30% of visits (realistic response rate) with uniform 1–10 scores and 40% chance of canned feedback comments
+- Wired as Step 6 of `run_populate_dynamic` (bumped `DYNAMIC_TOTAL_STEPS` from 5 → 6, added `"Surveys"` to step names)
+- `visit::generate_visits_for_appointments` now returns `(Vec<Uuid>, usize)` instead of `(usize, usize)` so the survey generator can consume visit_ids
+- Added `surveys: usize` field to `SimulationCounts`; flows through `/simulate/status` automatically via `#[serde(flatten)]`
+- `GET /simulate/db-counts` now queries `vital_fold.survey` as a 14th count
+- Added `Survey` model in `src/models/survey.rs`
+- Dashboard row-count display shows a `Surveys` row
+- **Intent:** gold-layer aggregation computes `AVG(gene_prissy_score) GROUP BY provider_id` as a provider-quality metric
+
+### RVU Schema File (2026-04-05)
+- Added standalone `migrations/rvu.sql` with:
+  - `vital_fold.cpt_code` — BIGINT identity reference table seeded with 12 common E/M + EKG CPT codes (99202-99205, 99211-99215, 93000/93005/93010) and approximate CY2024 wRVU / PE RVU / MP RVU values
+  - `vital_fold.appointment_cpt` — UUID PK line-item fact table (1+ rows per appointment) with BIGINT FKs to `cpt_code`, `provider`, `clinic`, RVU snapshot columns, and conversion factor
+- File is **not** merged into `init.sql` — run manually against an existing schema
+- Header comment documents the intended gold-layer wRVU productivity rollup (`SUM(work_rvu_snapshot * units) GROUP BY provider_id, month`)
+- Enables future pipeline to compute the industry-standard productivity metric used in US healthcare
 
 ### Schema Changes (2026-04-03 → 2026-04-04)
 

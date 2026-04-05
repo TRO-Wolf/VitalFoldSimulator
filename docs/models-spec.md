@@ -395,6 +395,61 @@ pub struct PatientVisitWithVitals {
     pub temperature: BigDecimal,
     pub oxygen_saturation: BigDecimal,
 }
+
+/// Maps to vital_fold.survey — optional 1:1 with patient_visit.
+/// Only ~30% of visits produce a survey (realistic response rate).
+/// Intent: gold-layer AVG(gene_prissy_score) GROUP BY provider_id.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Survey {
+    pub survey_id: Uuid,
+    pub patient_visit_id: Uuid,
+    pub gene_prissy_score: i32,          // 1–10
+    pub experience_score: i32,           // 1–10
+    pub feedback_comments: Option<String>,
+    pub creation_time: NaiveDateTime,
+}
+
+/// Maps to vital_fold.cpt_code — reference table seeded by POST /admin/init-db.
+/// 12 common E/M + EKG codes with CY2024 RVU values.
+/// Documentation-only — the RVU generator uses a private CptLookup struct.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CptCode {
+    pub cpt_code_id: i64,
+    pub code: String,                    // '99213', '93000', etc.
+    pub short_description: String,
+    pub category: String,                // 'E/M' or 'Diagnostic'
+    pub work_rvu: BigDecimal,
+    pub pe_rvu_nonfacility: BigDecimal,
+    pub pe_rvu_facility: BigDecimal,
+    pub mp_rvu: BigDecimal,
+    pub global_days: Option<i16>,        // 0, 10, 90, or NULL (XXX)
+    pub effective_year: i16,
+    pub is_active: bool,
+}
+
+/// Maps to vital_fold.appointment_cpt — billing line-item fact table.
+/// One row per CPT billed on an appointment (typically 1 E/M + optional EKG).
+/// RVU values are snapshotted at service time so gold-layer rollups stay
+/// stable across annual CMS PPRRVU updates.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AppointmentCpt {
+    pub appointment_cpt_id: Uuid,
+    pub appointment_id: Uuid,            // FK to vital_fold.appointment
+    pub cpt_code_id: i64,                // FK to vital_fold.cpt_code
+    pub provider_id: i64,
+    pub clinic_id: i64,
+    pub service_date: NaiveDate,
+    pub units: i16,                      // usually 1
+    pub modifier_1: Option<String>,      // CPT modifier codes (unused in synthetic data)
+    pub modifier_2: Option<String>,
+    pub work_rvu_snapshot: BigDecimal,
+    pub pe_rvu_snapshot: BigDecimal,
+    pub mp_rvu_snapshot: BigDecimal,
+    pub total_rvu_snapshot: BigDecimal,  // work + pe_nonfacility + mp
+    pub conversion_factor: BigDecimal,   // $32.7442 for CY2024
+    pub expected_amount: Option<BigDecimal>,  // total_rvu × CF, rounded to 2dp
+    pub creation_time: NaiveDateTime,
+}
 ```
 
 ## `src/engine_state.rs` — SimulationCounts
@@ -419,6 +474,10 @@ pub struct SimulationCounts {
     pub medical_records: usize,
     pub patient_visits: usize,
     pub patient_vitals: usize,
+    pub surveys: usize,
+    // RVU / billing
+    pub cpt_codes: usize,         // reference table (usually 12)
+    pub appointment_cpt: usize,   // line-items, ~1.2× appointments
     // DynamoDB table counts (set by POST /simulate)
     pub dynamo_patient_visits: usize,
     pub dynamo_patient_vitals: usize,

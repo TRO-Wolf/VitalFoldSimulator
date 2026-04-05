@@ -7,13 +7,7 @@ pub mod appointment;
 pub mod medical_record;
 pub mod patient_visit;
 pub mod patient_vital;
+pub mod survey;
 
 pub use user::*;
-pub use insurance::*;
-pub use patient::*;
-pub use provider::*;
-pub use clinic::*;
-pub use appointment::*;
-pub use medical_record::*;
 pub use patient_visit::*;
-pub use patient_vital::*;

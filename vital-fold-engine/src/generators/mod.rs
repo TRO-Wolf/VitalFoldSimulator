@@ -21,11 +21,13 @@ pub mod patient;
 pub mod appointment;
 pub mod medical_record;
 pub mod visit;
+pub mod survey;
+pub mod rvu;
 
 use crate::db::DbPool;
 use crate::engine_state::{ClinicActivity, PopulateProgress, SimulationCounts, SimulatorState, TimelapseState};
 use crate::errors::AppError;
-use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
+use chrono::{NaiveDate, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -115,7 +117,8 @@ fn count_static_rows(c: &SimulationCounts) -> u64 {
 /// Sum Aurora row counts for dynamic (date-dependent) data only.
 fn count_dynamic_rows(c: &SimulationCounts) -> u64 {
     (c.clinic_schedules + c.appointments + c.medical_records
-        + c.patient_visits + c.patient_vitals) as u64
+        + c.patient_visits + c.patient_vitals + c.surveys
+        + c.appointment_cpt) as u64
 }
 
 /// Context passed through all generators containing shared data and pool references.
@@ -124,6 +127,7 @@ pub struct SimulationContext {
     pub pool: DbPool,
 
     /// DynamoDB client (held here so generators can access it if needed)
+    #[allow(dead_code)]
     pub dynamo_client: DynamoClient,
 
     /// Populate configuration
@@ -216,8 +220,8 @@ const STATIC_STEP_NAMES: [&str; STATIC_TOTAL_STEPS] = [
     "Patient Insurance",
 ];
 
-/// Total number of steps in the dynamic populate pipeline (steps 9-13).
-const DYNAMIC_TOTAL_STEPS: usize = 5;
+/// Total number of steps in the dynamic populate pipeline.
+const DYNAMIC_TOTAL_STEPS: usize = 7;
 
 /// Dynamic populate step display names.
 const DYNAMIC_STEP_NAMES: [&str; DYNAMIC_TOTAL_STEPS] = [
@@ -226,6 +230,8 @@ const DYNAMIC_STEP_NAMES: [&str; DYNAMIC_TOTAL_STEPS] = [
     "Medical Records",
     "Patient Visits",
     "Patient Vitals",
+    "Surveys",
+    "Billing (CPT / RVU)",
 ];
 
 /// Publish populate progress to the global state.
@@ -535,20 +541,31 @@ pub async fn run_populate_dynamic(
 
     // Step 4: Patient Visits
     publish_progress(state, 3, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
-    let (new_visits, new_vitals) = visit::generate_visits_for_appointments(
+    let (visit_ids, ekg_flags, new_vitals) = visit::generate_visits_for_appointments(
         &pool, &appointments,
     ).await?;
+    let new_visits = visit_ids.len();
     counts.patient_visits += new_visits;
 
     // Step 5: Patient Vitals (already generated above, just track count)
     publish_progress(state, 4, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
     counts.patient_vitals += new_vitals;
 
+    // Step 6: Surveys (~30% of visits fill one out)
+    publish_progress(state, 5, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    let new_surveys = survey::generate_surveys_for_visits(&pool, &visit_ids).await?;
+    counts.surveys += new_surveys;
+
+    // Step 7: Billing line-items (appointment_cpt with RVU snapshots)
+    publish_progress(state, 6, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    let new_cpt = rvu::generate_appointment_cpt(&pool, &appointments, &ekg_flags).await?;
+    counts.appointment_cpt += new_cpt;
+
     let duration = Utc::now().signed_duration_since(start);
     tracing::info!(
-        "Dynamic populate complete in {:.2}s — {} appointments, {} medical records, {} visits, {} vitals",
+        "Dynamic populate complete in {:.2}s — {} appointments, {} medical records, {} visits, {} vitals, {} surveys, {} cpt line-items",
         duration.num_milliseconds() as f64 / 1000.0,
-        new_appointments, new_medical_records, new_visits, new_vitals,
+        new_appointments, new_medical_records, new_visits, new_vitals, new_surveys, new_cpt,
     );
 
     state.set_last_run(Utc::now());
@@ -730,6 +747,7 @@ struct ClinicCount {
 ///
 /// Each simulated day is subdivided into 8 hour-windows (9am–5pm). The real-time
 /// interval between windows is `day_interval_secs / 8`.
+#[allow(dead_code)]
 pub async fn run_timelapse(
     pool: DbPool,
     state: &SimulatorState,

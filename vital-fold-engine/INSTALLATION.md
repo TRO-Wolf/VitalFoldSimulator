@@ -9,7 +9,7 @@ Complete guide for installing and deploying VitalFold Engine in various environm
 3. [Environment Configuration](#environment-configuration)
 4. [Render.com Deployment](#rendercom-deployment)
 5. [Docker Deployment](#docker-deployment)
-6. [Aurora DSQL Setup](#aurora-dsql-setup)
+6. [AWS Prerequisites](#aws-prerequisites)
 7. [Troubleshooting](#troubleshooting)
 
 ---
@@ -425,76 +425,132 @@ docker-compose up -d
 
 ---
 
-## Aurora DSQL Setup
+## AWS Prerequisites
 
-### Prerequisites
+VitalFold Engine needs three AWS resources: an **Aurora DSQL cluster**, **two DynamoDB tables**, and an **IAM principal** with permissions to both. This section walks through each.
 
-- AWS Account
-- IAM credentials with DSQL permissions
-- VPC configured (or use default)
+> **Note:** Amazon Aurora DSQL (launched 2024) is a different product from classic Aurora Serverless. It has its own console, uses IAM-based authentication, and is serverless by default with no VPC/security-group configuration required. Do not confuse it with "Aurora with PostgreSQL compatibility".
 
-### Step 1: Create Aurora DSQL Cluster
+### Step 1 — Create an Aurora DSQL Cluster
 
-1. Go to [AWS Console → Amazon Aurora](https://console.aws.amazon.com/rds/)
-2. Click "Create Database"
-3. Select "Amazon Aurora with PostgreSQL compatibility"
-4. Choose "Serverless v2"
-5. Configure:
-   - **Cluster identifier**: `vital-fold-cluster`
-   - **Master username**: `admin`
-   - **Master password**: Use strong password or AWS Secrets Manager
-   - **Database name**: `postgres`
-   - **Backup retention**: 7 days (production minimum)
-   - **Region**: Your preferred region
-   - **VPC**: Select appropriate VPC
+1. Open the [AWS Console → Aurora DSQL](https://console.aws.amazon.com/dsql/).
+2. Click **Create cluster** and pick a region (e.g. `us-east-2`).
+3. Enable or disable multi-region according to your needs (single-region is fine for development).
+4. Wait until status shows **Active**.
+5. Copy the **cluster endpoint** — it will look like `<cluster-id>.dsql.<region>.on.aws`.
 
-### Step 2: Configure Security Groups
-
-1. In RDS console, find your cluster
-2. Click "Modify"
-3. Under "Security and network", edit security group
-4. Add inbound rule:
-   - Type: PostgreSQL
-   - Port: 5432
-   - Source: Your application's IP or security group
-
-### Step 3: Get Connection String
-
-1. In RDS console, find your cluster
-2. Click "Connectivity & security"
-3. Copy Writer endpoint (e.g., `cluster-name.dsql.us-east-2.on.aws`)
-
-### Step 4: Configure Application
-
-Update `.env`:
-
-```env
-DSQL_ENDPOINT=cluster-name.dsql.us-east-2.on.aws
-DSQL_CLUSTER_ENDPOINT=cluster-name.dsql.us-east-2.on.aws
-DSQL_REGION=us-east-2
-DSQL_DB_NAME=postgres
-DSQL_USER=admin
-DSQL_PORT=5432
-AWS_REGION=us-east-2
-AWS_ACCESS_KEY_ID=<from-IAM>
-AWS_SECRET_ACCESS_KEY=<from-IAM>
-```
-
-### Step 5: Run Migrations
+Or via CLI:
 
 ```bash
-cargo sqlx migrate run
+aws dsql create-cluster \
+  --region us-east-2 \
+  --deletion-protection-enabled false \
+  --tags Key=Project,Value=vital-fold-engine
 ```
 
-### Cost Optimization
+### Step 2 — Create DynamoDB Tables
 
-Aurora DSQL is serverless and auto-scales. Typical monthly costs:
+The app writes to two on-demand DynamoDB tables during `POST /simulate/date-range`. Create both in the same region as your DSQL cluster:
 
-| Workload | Estimated Cost |
-|----------|---|
-| Development (low usage) | $1-5/month |
-| Small production | $20-50/month |
-| Large production | $100-500/month |
+```bash
+aws dynamodb create-table \
+  --region us-east-2 \
+  --table-name patient_visit \
+  --attribute-definitions \
+      AttributeName=patient_id,AttributeType=S \
+      AttributeName=sort_key,AttributeType=S \
+  --key-schema \
+      AttributeName=patient_id,KeyType=HASH \
+      AttributeName=sort_key,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
+
+aws dynamodb create-table \
+  --region us-east-2 \
+  --table-name patient_vitals \
+  --attribute-definitions \
+      AttributeName=patient_visit_id,AttributeType=S \
+  --key-schema \
+      AttributeName=patient_visit_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+```
+
+See [`docs/dynamo.md`](../docs/dynamo.md) for the canonical key shape and item structure.
+
+### Step 3 — Create an IAM Principal
+
+The application authenticates to Aurora DSQL using an IAM-signed auth token and writes to DynamoDB with the same credentials. Create a user or role with a minimal policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DsqlAdminConnect",
+      "Effect": "Allow",
+      "Action": [
+        "dsql:DbConnect",
+        "dsql:DbConnectAdmin"
+      ],
+      "Resource": "arn:aws:dsql:us-east-2:<your-account-id>:cluster/<cluster-id>"
+    },
+    {
+      "Sid": "DynamoDbWrite",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-2:<your-account-id>:table/patient_visit",
+        "arn:aws:dynamodb:us-east-2:<your-account-id>:table/patient_vitals"
+      ]
+    }
+  ]
+}
+```
+
+For a quick local setup you can attach this policy to an IAM user and put the access key ID + secret key in `.env`. For production, prefer an IAM role assumed via instance profile, ECS task role, or IRSA.
+
+Refer to the [AWS Aurora DSQL IAM docs](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/accessing-sql-access-iam.html) for the current authoritative permission names — AWS occasionally renames IAM actions for new services.
+
+### Step 4 — Generate a JWT Secret
+
+The API signs tokens with `JWT_SECRET`. Generate a strong one:
+
+```bash
+openssl rand -base64 32
+```
+
+Paste the result into `.env` as `JWT_SECRET=...`.
+
+### Step 5 — Initialize the Schema
+
+Once the app starts with `cargo run`, log in as admin and call the init endpoint to create all 16 `vital_fold.*` tables from `migrations/init.sql`:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8787/api/v1/auth/admin-login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"'"$ADMIN_PASSWORD"'"}' | jq -r .token)
+
+curl -X POST http://localhost:8787/admin/init-db \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Or click **Init Database** on the admin dashboard at `http://localhost:8787/`.
+
+### Cost Guidance
+
+Aurora DSQL and DynamoDB on-demand are both serverless — you pay per request.
+
+| Workload | Rough monthly cost |
+|---|---|
+| Dev / demo (occasional populate runs) | < $5 |
+| Weekly 30-day populate + daily sync | $20–60 |
+| Continuous integration / nightly runs | $50–150 |
 
 ---
 
