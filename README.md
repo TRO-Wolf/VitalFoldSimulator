@@ -44,6 +44,14 @@ Appointment volume is **deterministic**, not configurable:
 - A clinic with 4 providers generates 144 appointments/day
 - With 50 providers × 90 days = 162,000 appointments per populate run
 
+### No-Shows & Cancellations
+Each appointment is randomly assigned a status:
+- **~90% completed** — produces a visit, vitals, medical record, survey chance, and billing line-item
+- **~9% cancelled** — stays in the appointment table but generates no downstream clinical records
+- **~1% no-show** — patient didn't arrive; same as cancelled but distinct status for analytics
+
+The ratio between `appointments` and `patient_visits` is a gold-layer metric for show-rate analysis by provider, clinic, or day of week.
+
 ### Per-Clinic Distribution (clinic_weights)
 Patients, providers, and appointments are distributed across clinics by configurable weights:
 - **Default:** `[12, 3, 14, 14, 2, 14, 14, 12, 8, 8]` (Charlotte, Asheville, Atlanta×2, Tallahassee, Miami×2, Orlando, Jacksonville×2)
@@ -94,6 +102,23 @@ SELECT provider_id,
 FROM vital_fold.appointment_cpt
 GROUP BY provider_id, month;
 ```
+
+### Data Quality Traps (Intentional)
+
+The simulator deliberately injects realistic data quality issues that downstream bronze→silver→gold pipelines must handle:
+
+| Issue | Rate | Where | Pipeline Impact |
+|-------|------|-------|-----------------|
+| **NULL vital signs** | ~3% of visits | `height`, `weight`, `oxygen_saturation` | `AVG()` without `NULLIF` returns wrong result |
+| **Vital sign outliers** | ~2% of visits | temp 94–104°F, BP 70–220, HR 30–180, O2 70–94% | Alert rules, percentile calculations |
+| **Late arrivals** | ~2% of visits | `checkin_time > appointment_datetime` | Negative wait-time calculations |
+| **Duplicate SSNs** | ~2% of demographics | `patient_demographics.ssn` | Identity resolution / MDM dedup |
+| **Duplicate emails** | ~3% of patients | `patient.email` | Entity resolution |
+| **Duplicate policy numbers** | ~1% of insurance | `patient_insurance.policy_number` | Claims processing uniqueness |
+| **Middle name gaps** | ~60% NULL | `patient.middle_name` | Name-matching `COALESCE` required |
+| **Diagnosis-vital mismatch** | Natural | "Bradycardia" + HR 120 bpm | Clinical quality dashboards |
+| **Stale age field** | 100% | `patient_demographics.age` vs `date_of_birth` | Derive age from DOB, never trust stored value |
+| **Lapsed coverage** | ~20% of insurance | `coverage_end_date` before appointment | Coverage gap detection in billing |
 
 ---
 

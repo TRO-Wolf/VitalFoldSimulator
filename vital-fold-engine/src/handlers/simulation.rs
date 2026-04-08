@@ -911,7 +911,7 @@ pub async fn get_db_counts(
 ) -> Result<HttpResponse, AppError> {
     use crate::engine_state::SimulationCounts;
 
-    // Single round-trip: 16 scalar sub-selects.
+    // Main counts: 16 scalar sub-selects (sqlx tuple max).
     let row: (i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(
         "SELECT \
             (SELECT COUNT(*) FROM vital_fold.insurance_company),  \
@@ -934,6 +934,15 @@ pub async fn get_db_counts(
     .fetch_one(pool.get_ref())
     .await?;
 
+    // Appointment status breakdown (separate query to stay under 16-tuple limit).
+    let status_row: (i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'no_show'), \
+            (SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled')"
+    )
+    .fetch_one(pool.get_ref())
+    .await?;
+
     // DynamoDB: scan with SELECT COUNT for exact item counts.
     let (dyn_visits, dyn_vitals) = tokio::join!(
         scan_table_count(&dynamo, "patient_visit"),
@@ -951,6 +960,8 @@ pub async fn get_db_counts(
         patient_insurance:     row.7  as usize,
         clinic_schedules:      row.8  as usize,
         appointments:          row.9  as usize,
+        no_shows:              status_row.0 as usize,
+        cancellations:         status_row.1 as usize,
         medical_records:       row.10 as usize,
         patient_visits:        row.11 as usize,
         patient_vitals:        row.12 as usize,
@@ -1246,6 +1257,7 @@ pub async fn get_visitors(
          JOIN vital_fold.patient p ON p.patient_id = a.patient_id \
          JOIN vital_fold.clinic c ON c.clinic_id = a.clinic_id \
          WHERE a.appointment_datetime::date = CURRENT_DATE \
+           AND a.status = 'completed' \
          ORDER BY c.clinic_name, a.appointment_datetime"
     )
     .fetch_all(pool.get_ref())

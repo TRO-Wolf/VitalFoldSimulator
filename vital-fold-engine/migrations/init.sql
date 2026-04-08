@@ -209,12 +209,13 @@ CREATE INDEX ASYNC IF NOT EXISTS idx_clinic_schedule_provider_day
 -- 10. appointment — provider fills 36 slots/day at their clinic
 -- =============================================================================
 CREATE TABLE vital_fold.appointment (
-    appointment_id       UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-    patient_id           UUID      NOT NULL,
-    provider_id          BIGINT    NOT NULL,
-    clinic_id            BIGINT    NOT NULL,
-    appointment_datetime TIMESTAMP NOT NULL,
-    reason_for_visit     VARCHAR(255) NOT NULL
+    appointment_id       UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    patient_id           UUID         NOT NULL,
+    provider_id          BIGINT       NOT NULL,
+    clinic_id            BIGINT       NOT NULL,
+    appointment_datetime TIMESTAMP    NOT NULL,
+    reason_for_visit     VARCHAR(255) NOT NULL,
+    status               VARCHAR(20)  NOT NULL DEFAULT 'completed'
 );
 
 CREATE INDEX ASYNC IF NOT EXISTS idx_appointment_patient_id
@@ -225,6 +226,8 @@ CREATE INDEX ASYNC IF NOT EXISTS idx_appointment_clinic_datetime
     ON vital_fold.appointment (clinic_id, appointment_datetime);
 CREATE INDEX ASYNC IF NOT EXISTS idx_appointment_provider_datetime
     ON vital_fold.appointment (provider_id, appointment_datetime);
+CREATE INDEX ASYNC IF NOT EXISTS idx_appointment_status
+    ON vital_fold.appointment (status);
 
 
 -- =============================================================================
@@ -280,12 +283,12 @@ CREATE TABLE vital_fold.patient_vitals (
     patient_id              UUID          NOT NULL,
     clinic_id               BIGINT        NOT NULL,
     provider_id             BIGINT        NOT NULL,
-    height                  DECIMAL(5, 2) NOT NULL,
-    weight                  DECIMAL(5, 2) NOT NULL,
+    height                  DECIMAL(5, 2),
+    weight                  DECIMAL(5, 2),
     blood_pressure          VARCHAR(20)   NOT NULL,
     heart_rate              INT           NOT NULL,
     temperature             DECIMAL(4, 1) NOT NULL,
-    oxygen_saturation       DECIMAL(4, 1) NOT NULL,
+    oxygen_saturation       DECIMAL(4, 1),
     creation_time           TIMESTAMP     NOT NULL,
     record_expiration_epoch BIGINT        NOT NULL
 );

@@ -27,7 +27,7 @@ pub mod rvu;
 use crate::db::DbPool;
 use crate::engine_state::{ClinicActivity, PopulateProgress, SimulationCounts, SimulatorState, TimelapseState};
 use crate::errors::AppError;
-use chrono::{NaiveDate, TimeDelta, Utc};
+use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -523,6 +523,7 @@ pub async fn run_populate_dynamic(
     }
 
     // Step 2: Appointments (each provider fills 36 slots/day at their clinic)
+    // Returns all appointments including no-shows and cancellations.
     publish_progress(state, 1, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
     let appointments = appointment::generate_appointments_by_day(
         &pool, &pt_ids, &prov_ids, &cl_ids,
@@ -532,17 +533,32 @@ pub async fn run_populate_dynamic(
     let new_appointments = appointments.len();
     counts.appointments += new_appointments;
 
-    // Step 3: Medical Records
+    // Split: only completed appointments produce downstream clinical records.
+    // No-shows and cancellations stay in the appointment table but get nothing else.
+    let completed: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = appointments.iter()
+        .filter(|(_, _, _, _, _, status)| status == "completed")
+        .map(|(id, pt, cl, pv, dt, _)| (*id, *pt, *cl, *pv, *dt))
+        .collect();
+    let no_shows = appointments.iter().filter(|a| a.5 == "no_show").count();
+    let cancellations = appointments.iter().filter(|a| a.5 == "cancelled").count();
+    counts.no_shows += no_shows;
+    counts.cancellations += cancellations;
+    tracing::info!(
+        "Appointment status split: {} completed, {} no-show, {} cancelled",
+        completed.len(), no_shows, cancellations
+    );
+
+    // Step 3: Medical Records (completed appointments only)
     publish_progress(state, 2, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
     let new_medical_records = medical_record::generate_medical_records_for_range(
-        &pool, &appointments, records_per_appointment,
+        &pool, &completed, records_per_appointment,
     ).await?;
     counts.medical_records += new_medical_records;
 
-    // Step 4: Patient Visits
+    // Step 4: Patient Visits (completed appointments only)
     publish_progress(state, 3, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
     let (visit_ids, ekg_flags, new_vitals) = visit::generate_visits_for_appointments(
-        &pool, &appointments,
+        &pool, &completed,
     ).await?;
     let new_visits = visit_ids.len();
     counts.patient_visits += new_visits;
@@ -556,16 +572,18 @@ pub async fn run_populate_dynamic(
     let new_surveys = survey::generate_surveys_for_visits(&pool, &visit_ids).await?;
     counts.surveys += new_surveys;
 
-    // Step 7: Billing line-items (appointment_cpt with RVU snapshots)
+    // Step 7: Billing line-items (completed appointments only — ekg_flags aligns 1:1)
     publish_progress(state, 6, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
-    let new_cpt = rvu::generate_appointment_cpt(&pool, &appointments, &ekg_flags).await?;
+    let new_cpt = rvu::generate_appointment_cpt(&pool, &completed, &ekg_flags).await?;
     counts.appointment_cpt += new_cpt;
 
     let duration = Utc::now().signed_duration_since(start);
     tracing::info!(
-        "Dynamic populate complete in {:.2}s — {} appointments, {} medical records, {} visits, {} vitals, {} surveys, {} cpt line-items",
+        "Dynamic populate complete in {:.2}s — {} appointments ({} completed, {} no-show, {} cancelled), \
+         {} medical records, {} visits, {} vitals, {} surveys, {} cpt line-items",
         duration.num_milliseconds() as f64 / 1000.0,
-        new_appointments, new_medical_records, new_visits, new_vitals, new_surveys, new_cpt,
+        new_appointments, completed.len(), no_shows, cancellations,
+        new_medical_records, new_visits, new_vitals, new_surveys, new_cpt,
     );
 
     state.set_last_run(Utc::now());
@@ -819,6 +837,7 @@ pub async fn run_timelapse(
                  FROM vital_fold.appointment \
                  WHERE appointment_datetime::date = $1 \
                    AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
+                   AND status = 'completed' \
                  GROUP BY clinic_id"
             )
             .bind(current_date)
@@ -895,6 +914,7 @@ async fn animate_single_day(
              FROM vital_fold.appointment \
              WHERE appointment_datetime::date = $1 \
                AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
+               AND status = 'completed' \
              GROUP BY clinic_id"
         )
         .bind(date)

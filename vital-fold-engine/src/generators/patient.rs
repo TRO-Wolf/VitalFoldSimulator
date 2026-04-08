@@ -63,6 +63,7 @@ struct PatientBatch {
 
     pt_first_names:   Vec<String>,
     pt_last_names:    Vec<String>,
+    pt_middle_names:  Vec<Option<String>>,
     pt_dobs:          Vec<chrono::NaiveDate>,
     pt_streets:       Vec<String>,
     pt_cities:        Vec<String>,
@@ -78,7 +79,7 @@ struct PatientBatch {
 
 /// Build all patient + emergency contact row data in memory (no awaits).
 /// Returns the batch so the caller can drop all RNG state before awaiting.
-fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
+fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> Result<PatientBatch, crate::errors::AppError> {
     use fake::Fake;
     use fake::faker::name::en::{FirstName, LastName};
     use fake::faker::address::en::StreetName;
@@ -93,7 +94,9 @@ fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
 
     // Build weighted distribution for home clinic assignment using configurable weights.
     let dist = WeightedIndex::new(clinic_weights)
-        .unwrap_or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS).expect("default weights are valid"));
+        .or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS))
+        .map_err(|e| crate::errors::AppError::Internal(
+            format!("clinic weights invalid: {}", e)))?;
 
     let mut batch = PatientBatch {
         ec_ids:           Vec::with_capacity(n),
@@ -105,6 +108,7 @@ fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
 
         pt_first_names:   Vec::with_capacity(n),
         pt_last_names:    Vec::with_capacity(n),
+        pt_middle_names:  Vec::with_capacity(n),
         pt_dobs:          Vec::with_capacity(n),
         pt_streets:       Vec::with_capacity(n),
         pt_cities:        Vec::with_capacity(n),
@@ -147,9 +151,28 @@ fn build_patient_batch(n: usize, clinic_weights: &[u32]) -> PatientBatch {
         batch.pt_phones.push(gen_phone(&mut rng));
         batch.pt_emails.push(SafeEmail().fake());
         batch.pt_reg_dates.push(today);
+        // Middle name: ~40% populated, rest NULL
+        batch.pt_middle_names.push(if rng.random_bool(0.4) {
+            Some(FirstName().fake())
+        } else {
+            None
+        });
     }
 
-    batch
+    // Inject ~3% duplicate emails (spouses sharing email, data entry errors).
+    let email_count = batch.pt_emails.len();
+    if email_count > 100 {
+        let dup_count = email_count * 3 / 100;
+        for _ in 0..dup_count {
+            let src = rng.random_range(0..email_count);
+            let dst = rng.random_range(0..email_count);
+            if src != dst {
+                batch.pt_emails[dst] = batch.pt_emails[src].clone();
+            }
+        }
+    }
+
+    Ok(batch)
 }
 
 /// Generate N patients and their emergency contacts in chunked bulk INSERT passes.
@@ -161,7 +184,7 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
     let n: usize = ctx.config.patients;
 
     // Generate all row data synchronously — rng is dropped before any await.
-    let batch: PatientBatch = build_patient_batch(n, &ctx.config.clinic_weights);
+    let batch: PatientBatch = build_patient_batch(n, &ctx.config.clinic_weights)?;
 
     // Process in chunks to respect the DSQL 3000-row per-transaction limit.
     for chunk_start in (0..n).step_by(DSQL_BATCH_SIZE) {
@@ -198,14 +221,15 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
 
         let patient_rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
             "INSERT INTO vital_fold.patient \
-             (first_name, last_name, date_of_birth, street_address, city, state, zip_code, \
+             (first_name, last_name, middle_name, date_of_birth, street_address, city, state, zip_code, \
               phone_number, email, registration_date, emergency_contact_id) \
-             SELECT * FROM UNNEST($1::text[], $2::text[], $3::date[], $4::text[], $5::text[], \
-                                  $6::text[], $7::text[], $8::text[], $9::text[], $10::date[], $11::text[]) \
+             SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::date[], $5::text[], $6::text[], \
+                                  $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::text[]) \
              RETURNING patient_id"
         )
         .bind(&batch.pt_first_names[r.clone()])
         .bind(&batch.pt_last_names[r.clone()])
+        .bind(&batch.pt_middle_names[r.clone()])
         .bind(&batch.pt_dobs[r.clone()])
         .bind(&batch.pt_streets[r.clone()])
         .bind(&batch.pt_cities[r.clone()])
@@ -295,6 +319,18 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
             genders_v.push(genders[rng.random_range(0..genders.len())].to_string());
         }
 
+        // Inject ~2% duplicate SSNs (identity resolution trap for downstream MDM pipelines).
+        if ssns.len() > 100 {
+            let dup_count = ssns.len() * 2 / 100;
+            for _ in 0..dup_count {
+                let src = rng.random_range(0..ssns.len());
+                let dst = rng.random_range(0..ssns.len());
+                if src != dst {
+                    ssns[dst] = ssns[src].clone();
+                }
+            }
+        }
+
         (pt_ids, first_names, last_names, dobs, ages, ssns, ethnicities_v, genders_v)
     }; // rng dropped here before any await
 
@@ -362,6 +398,18 @@ pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(
             policy_nums.push(policy);
             starts.push(start);
             ends.push(end);
+        }
+
+        // Inject ~1% duplicate policy numbers (insurance system reissues).
+        if policy_nums.len() > 100 {
+            let dup_count = policy_nums.len() / 100;
+            for _ in 0..dup_count {
+                let src = rng.random_range(0..policy_nums.len());
+                let dst = rng.random_range(0..policy_nums.len());
+                if src != dst {
+                    policy_nums[dst] = policy_nums[src].clone();
+                }
+            }
         }
 
         (pt_ids, plan_ids, policy_nums, starts, ends)

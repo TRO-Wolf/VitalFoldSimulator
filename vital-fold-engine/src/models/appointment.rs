@@ -11,6 +11,8 @@ pub struct Appointment {
     pub clinic_id: i64,
     pub appointment_datetime: NaiveDateTime,
     pub reason_for_visit: String,
+    /// Appointment outcome: "completed", "no_show", or "cancelled".
+    pub status: String,
 }
 
 

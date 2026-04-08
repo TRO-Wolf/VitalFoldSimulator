@@ -23,6 +23,8 @@ const AURORA_FIELDS = [
   { key: 'patient_insurance', label: 'Patient Insurance' },
   { key: 'clinic_schedules', label: 'Clinic Schedules' },
   { key: 'appointments', label: 'Appointments' },
+  { key: 'no_shows', label: 'No-Shows' },
+  { key: 'cancellations', label: 'Cancellations' },
   { key: 'medical_records', label: 'Medical Records' },
   { key: 'patient_visits', label: 'Patient Visits' },
   { key: 'patient_vitals', label: 'Patient Vitals' },

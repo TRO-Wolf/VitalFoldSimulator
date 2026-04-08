@@ -609,7 +609,8 @@ vital_fold.appointment
   ├─ provider_id (BIGINT FK → provider)
   ├─ clinic_id (BIGINT FK → clinic)
   ├─ appointment_datetime (TIMESTAMP)          -- 15-minute windows, 8:00–16:45
-  └─ reason_for_visit (VARCHAR)
+  ├─ reason_for_visit (VARCHAR)
+  └─ status (VARCHAR 20)                       -- 'completed' (~90%), 'no_show' (~1%), 'cancelled' (~9%)
 
 vital_fold.medical_record
   ├─ medical_record_id (UUID)

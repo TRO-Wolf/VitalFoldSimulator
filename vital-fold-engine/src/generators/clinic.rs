@@ -126,8 +126,8 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
 /// to the old behavior of 1-2 random clinics.
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
-    let open_time = NaiveTime::from_hms_opt(8, 0, 0).expect("08:00 is a valid time");
-    let close_time = NaiveTime::from_hms_opt(17, 0, 0).expect("17:00 is a valid time");
+    let open_time = NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default();
+    let close_time = NaiveTime::from_hms_opt(17, 0, 0).unwrap_or_default();
 
     let has_assignments = !ctx.provider_clinic_assignments.is_empty();
 

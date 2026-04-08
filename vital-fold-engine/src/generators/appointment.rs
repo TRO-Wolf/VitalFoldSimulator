@@ -58,6 +58,22 @@ fn distribute_by_weight(total: usize, weights: &[u32], weight_sum: u32) -> Vec<u
 /// Aurora DSQL maximum rows per transaction statement.
 const DSQL_BATCH_SIZE: usize = 2500;
 
+/// Appointment status rates — approximate outpatient cardiology clinic figures.
+/// ~1% no-show (patient doesn't arrive), ~9% cancellation (patient cancels before visit).
+const NO_SHOW_RATE: f64 = 0.01;
+const CANCELLATION_RATE: f64 = 0.09;
+
+/// Roll a random appointment status: completed (~90%), no_show (~1%), cancelled (~9%).
+fn roll_status(roll: f64) -> &'static str {
+    if roll < NO_SHOW_RATE {
+        "no_show"
+    } else if roll < NO_SHOW_RATE + CANCELLATION_RATE {
+        "cancelled"
+    } else {
+        "completed"
+    }
+}
+
 /// Pre-build a lookup: clinic_index → Vec<patient_ids> for patients assigned to that metro.
 /// Used to bias patient selection toward the clinic's geographic area.
 fn build_clinic_patient_map(
@@ -138,7 +154,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
                         let appt_dt = NaiveDateTime::new(
                             date,
                             chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                                .expect("hour 8..16 and minute 0/15/30/45 are always valid"),
+                                .unwrap_or_default(),
                         );
 
                         pt_ids.push(patient_id);
@@ -186,8 +202,11 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
 ///
 /// Each provider gets 36 appointments per day (one per 15-minute slot from 8:00–16:45)
 /// at clinics distributed by `clinic_weights`. Patients are drawn randomly.
+/// Each appointment is assigned a status: ~90% completed, ~1% no_show, ~9% cancelled.
 ///
-/// Uses `INSERT ... RETURNING` to capture generated UUIDs for immediate downstream use.
+/// Uses `INSERT ... RETURNING` to capture generated IDs and status for downstream filtering.
+/// The 6th tuple element is the status string — the caller filters to "completed" before
+/// passing to visit/medical-record/RVU generators.
 pub async fn generate_appointments_by_day(
     pool: &DbPool,
     patient_ids: &[Uuid],
@@ -196,9 +215,9 @@ pub async fn generate_appointments_by_day(
     start_date: NaiveDate,
     end_date: NaiveDate,
     clinic_weights: &[u32],
-) -> Result<Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)>, AppError> {
+) -> Result<Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)>, AppError> {
     use rand::{rng, Rng};
-    
+
     use super::SLOTS_PER_PROVIDER;
 
     let span = (end_date - start_date).num_days() + 1;
@@ -221,10 +240,10 @@ pub async fn generate_appointments_by_day(
     }
 
     let total = provider_assignments.len() * SLOTS_PER_PROVIDER * span as usize;
-    let mut all_results: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = Vec::with_capacity(total);
+    let mut all_results: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)> = Vec::with_capacity(total);
 
     // Build all appointment data synchronously — rng dropped before any await.
-    let (pt_ids, prov_ids, cl_ids, appt_dts, reasons) = {
+    let (pt_ids, prov_ids, cl_ids, appt_dts, reasons, statuses) = {
         let mut rng = rng();
 
         let mut pt_ids:   Vec<Uuid>          = Vec::with_capacity(total);
@@ -232,6 +251,7 @@ pub async fn generate_appointments_by_day(
         let mut cl_ids:   Vec<i64>           = Vec::with_capacity(total);
         let mut appt_dts: Vec<NaiveDateTime> = Vec::with_capacity(total);
         let mut reasons:  Vec<String>        = Vec::with_capacity(total);
+        let mut statuses: Vec<String>        = Vec::with_capacity(total);
 
         for day_offset in 0..span {
             let date = start_date + TimeDelta::days(day_offset);
@@ -242,11 +262,13 @@ pub async fn generate_appointments_by_day(
                         let minute = quarter * 15;
                         let patient_id = patient_ids[rng.random_range(0..patient_ids.len())];
                         let reason = APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
+                        let status = roll_status(rng.random::<f64>());
 
                         let appt_dt = NaiveDateTime::new(
                             date,
                             chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                                .expect("hour 8..16 and minute 0/15/30/45 are always valid"),
+                                .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(8, 0, 0)
+                                    .unwrap_or_default()),
                         );
 
                         pt_ids.push(patient_id);
@@ -254,40 +276,48 @@ pub async fn generate_appointments_by_day(
                         cl_ids.push(clinic_id);
                         appt_dts.push(appt_dt);
                         reasons.push(reason.to_string());
+                        statuses.push(status.to_string());
                     }
                 }
             }
         }
 
-        (pt_ids, prov_ids, cl_ids, appt_dts, reasons)
+        (pt_ids, prov_ids, cl_ids, appt_dts, reasons, statuses)
     }; // rng dropped here
 
-    // Bulk-insert in DSQL_BATCH_SIZE chunks, capturing generated IDs via RETURNING.
+    // Bulk-insert in DSQL_BATCH_SIZE chunks, capturing generated IDs + status via RETURNING.
     for chunk_start in (0..total).step_by(DSQL_BATCH_SIZE) {
         let chunk_end = (chunk_start + DSQL_BATCH_SIZE).min(total);
         let r = chunk_start..chunk_end;
 
-        let rows: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = sqlx::query_as(
+        let rows: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)> = sqlx::query_as(
             "INSERT INTO vital_fold.appointment \
-             (patient_id, provider_id, clinic_id, appointment_datetime, reason_for_visit) \
-             SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::bigint[], $4::timestamp[], $5::text[]) \
-             RETURNING appointment_id, patient_id, clinic_id, provider_id, appointment_datetime"
+             (patient_id, provider_id, clinic_id, appointment_datetime, reason_for_visit, status) \
+             SELECT * FROM UNNEST($1::uuid[], $2::bigint[], $3::bigint[], $4::timestamp[], $5::text[], $6::text[]) \
+             RETURNING appointment_id, patient_id, clinic_id, provider_id, appointment_datetime, status"
         )
         .bind(&pt_ids[r.clone()])
         .bind(&prov_ids[r.clone()])
         .bind(&cl_ids[r.clone()])
         .bind(&appt_dts[r.clone()])
         .bind(&reasons[r.clone()])
+        .bind(&statuses[r.clone()])
         .fetch_all(pool)
         .await?;
 
         all_results.extend(rows);
     }
 
+    let total_count = all_results.len();
+    let completed = all_results.iter().filter(|a| a.5 == "completed").count();
+    let no_shows = all_results.iter().filter(|a| a.5 == "no_show").count();
+    let cancelled = total_count - completed - no_shows;
     let days = (end_date - start_date).num_days() + 1;
     tracing::info!(
-        "Generated {} appointments ({} providers × 36 slots × {} days) for {} to {}",
-        all_results.len(), provider_assignments.len(), days, start_date, end_date
+        "Generated {} appointments ({} completed, {} no-show, {} cancelled) \
+         — {} providers × 36 slots × {} days for {} to {}",
+        total_count, completed, no_shows, cancelled,
+        provider_assignments.len(), days, start_date, end_date
     );
 
     Ok(all_results)
@@ -366,23 +396,29 @@ pub(super) async fn write_patient_vitals(
     let sort_key = format!("{}#{}", visit.clinic_id, visit.patient_visit_id);
 
     for attempt in 0..=DYNAMO_MAX_RETRIES {
-        let result = dynamo
+        let mut req = dynamo
             .put_item()
             .table_name("patient_vitals")
             .item("patient_id",              AttributeValue::S(visit.patient_id.to_string()))
             .item("clinic_id",               AttributeValue::S(sort_key.clone()))
             .item("provider_id",             AttributeValue::S(visit.provider_id.to_string()))
             .item("visit_id",                AttributeValue::S(visit.patient_visit_id.to_string()))
-            .item("height",                  AttributeValue::N(visit.height.to_string()))
-            .item("weight",                  AttributeValue::N(visit.weight.to_string()))
             .item("blood_pressure",          AttributeValue::S(visit.blood_pressure.clone()))
             .item("heart_rate",              AttributeValue::N(visit.heart_rate.to_string()))
             .item("temperature",             AttributeValue::N(visit.temperature.to_string()))
-            .item("oxygen",                  AttributeValue::N(visit.oxygen_saturation.to_string()))
             .item("creation_time",           AttributeValue::N(visit.creation_time.and_utc().timestamp().to_string()))
-            .item("record_expiration_epoch", AttributeValue::N(visit.record_expiration_epoch.to_string()))
-            .send()
-            .await;
+            .item("record_expiration_epoch", AttributeValue::N(visit.record_expiration_epoch.to_string()));
+        // Nullable vitals — only include in DynamoDB if present (absent = NULL in source).
+        if let Some(ref h) = visit.height {
+            req = req.item("height", AttributeValue::N(h.to_string()));
+        }
+        if let Some(ref w) = visit.weight {
+            req = req.item("weight", AttributeValue::N(w.to_string()));
+        }
+        if let Some(ref o) = visit.oxygen_saturation {
+            req = req.item("oxygen", AttributeValue::N(o.to_string()));
+        }
+        let result = req.send().await;
 
         match result {
             Ok(_) => return true,

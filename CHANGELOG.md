@@ -5,9 +5,30 @@
 
 ---
 
-## [Unreleased] — feature/web (uncommitted)
+## [Unreleased] — feature/no_shows
 
-**Survey Generator + RVU Generator + BIGINT Identity Migration + Provider-Driven Appointments + Schema Consolidation + Documentation Sync**
+**No-Shows & Cancellations + Survey Generator + RVU Generator + BIGINT Identity Migration + Provider-Driven Appointments + Schema Consolidation**
+
+### Realistic Data Quality Errors (2026-04-07)
+- **Nullable vitals**: `height`, `weight`, `oxygen_saturation` are now NULLABLE on `patient_vitals`. ~3% of visits have 1+ missing vital signs (simulates nurse skipping measurements). Downstream pipelines must handle NULLs in aggregation.
+- **Vital sign outliers**: ~2% of visits generate clinically extreme values — fever (100.5–104°F), hypothermia (94–96.5°F), hypertensive crisis (180–220/100–130), hypotension (70–90/40–55), severe bradycardia (30–45 bpm), tachycardia (130–180 bpm), hypoxemia (70–94% O2 sat). Tests alert rules and percentile calculations.
+- **Late arrivals**: ~2% of patients arrive 5–45 minutes AFTER their scheduled appointment time (`checkin_time > appointment_datetime`). Tests wait-time calculations and temporal assumption validation.
+- **Duplicate SSNs**: ~2% of patient_demographics share an SSN with another patient. Tests identity resolution / MDM logic.
+- **Duplicate emails**: ~3% of patients share an email address. Tests entity resolution and email-based dedup.
+- **Duplicate policy numbers**: ~1% of patient_insurance policy_number values are reused. Tests uniqueness assumptions in claims processing.
+- **Middle names**: ~40% of patients now have a `middle_name` populated (previously always NULL). Tests NULL handling in name-matching pipelines.
+- **Diagnosis-vital contradiction**: Diagnosis codes and vital signs are independently random — "Bradycardia" can appear with HR 120 bpm, "Tachycardia" with HR 55. This is an intentional data quality trap, not a bug.
+- **Stale age field**: `patient_demographics.age` is computed once at generation and never updated. Pipelines should derive age from `date_of_birth`, not trust the stored value.
+- DynamoDB `write_patient_vitals` now conditionally includes `height`, `weight`, and `oxygen` attributes (absent when NULL in Aurora source).
+
+### No-Shows & Cancellations (2026-04-07)
+- Added `status VARCHAR(20) NOT NULL DEFAULT 'completed'` column to `vital_fold.appointment` with values: `completed`, `no_show`, `cancelled`.
+- ~1% of generated appointments are no-shows, ~9% are cancellations, ~90% are completed.
+- Only completed appointments produce downstream records (patient_visit, patient_vitals, medical_record, survey, appointment_cpt). No-shows and cancellations remain in the appointment table but generate no clinical data.
+- Added `no_shows` and `cancellations` fields to `SimulationCounts` — visible in `/simulate/status` and `/simulate/db-counts`.
+- Heatmap and visitors endpoints now filter `WHERE status = 'completed'` to show actual clinic activity.
+- Dashboard displays No-Shows and Cancellations count rows.
+- Gold-layer metric: `SELECT status, COUNT(*) FROM vital_fold.appointment GROUP BY status` shows show-rate and cancellation-rate by provider, clinic, or day.
 
 ### RVU Generator (2026-04-05)
 - Merged `migrations/rvu.sql` into `migrations/init.sql` as sections 15 (`cpt_code`) and 16 (`appointment_cpt`); standalone `rvu.sql` deleted so a single `POST /admin/init-db` creates everything.
