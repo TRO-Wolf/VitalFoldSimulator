@@ -36,10 +36,10 @@ pub struct PatientVisitWithVitals {
     pub estimated_copay: BigDecimal,
     pub creation_time: NaiveDateTime,
     pub record_expiration_epoch: i64,
-    pub height: BigDecimal,
-    pub weight: BigDecimal,
+    pub height: Option<BigDecimal>,
+    pub weight: Option<BigDecimal>,
     pub blood_pressure: String,
     pub heart_rate: i32,
     pub temperature: BigDecimal,
-    pub oxygen_saturation: BigDecimal,
+    pub oxygen_saturation: Option<BigDecimal>,
 }

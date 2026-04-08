@@ -234,29 +234,41 @@ pub async fn generate_visits_for_appointments(
         let mut copays:              Vec<i32>                  = Vec::with_capacity(total);
         let mut creation_times:      Vec<NaiveDateTime>         = Vec::with_capacity(total);
         let mut expiry_epochs:       Vec<i64>                  = Vec::with_capacity(total);
-        let mut heights:             Vec<f64>                  = Vec::with_capacity(total);
-        let mut weights:             Vec<f64>                  = Vec::with_capacity(total);
+        let mut heights:             Vec<Option<f64>>          = Vec::with_capacity(total);
+        let mut weights:             Vec<Option<f64>>          = Vec::with_capacity(total);
         let mut blood_pressures:     Vec<String>               = Vec::with_capacity(total);
         let mut heart_rates:         Vec<i32>                  = Vec::with_capacity(total);
         let mut temperatures:        Vec<f64>                  = Vec::with_capacity(total);
-        let mut oxygen_saturations:  Vec<f64>                  = Vec::with_capacity(total);
+        let mut oxygen_saturations:  Vec<Option<f64>>          = Vec::with_capacity(total);
+
+        // Data quality error rates (realistic for outpatient cardiology).
+        const LATE_ARRIVAL_RATE: f64 = 0.02;    // 2% of patients arrive after scheduled time
+        const NULL_VITALS_RATE: f64 = 0.03;     // 3% of visits have 1+ missing vitals
+        const OUTLIER_VITALS_RATE: f64 = 0.02;  // 2% of visits have clinically extreme values
 
         // appointments tuple: (appt_id, patient_id, clinic_id, provider_id, appt_dt)
         for &(appt_id, patient_id, clinic_id, provider_id, appt_dt) in appointments {
             appointment_ids.push(appt_id);
-            // Checkin: 5–15 min before scheduled appointment
-            let early_arrival        = rng.random_range(5..=15i64);
-            // Provider seen: 0–5 min after scheduled time
+
+            // ~2% late arrivals: checkin AFTER appointment time (5–45 min late)
+            let is_late = rng.random_bool(LATE_ARRIVAL_RATE);
+            let checkin = if is_late {
+                appt_dt + TimeDelta::minutes(rng.random_range(5..=45i64))
+            } else {
+                appt_dt - TimeDelta::minutes(rng.random_range(5..=15i64))
+            };
+            // Provider seen: 0–5 min after scheduled time (or after late arrival)
+            let seen_base = if is_late { checkin } else { appt_dt };
             let provider_seen_offset = rng.random_range(0..=5i64);
-            // Checkout: 15–30 min after scheduled time
-            let checkout_offset      = rng.random_range(15..=30i64);
+            // Checkout: 15–30 min after provider seen
+            let checkout_offset = rng.random_range(15..=30i64);
 
             patient_ids.push(patient_id);
             clinic_ids.push(clinic_id);
             provider_ids.push(provider_id);
-            checkin_times.push(appt_dt - TimeDelta::minutes(early_arrival));
-            checkout_times.push(Some(appt_dt + TimeDelta::minutes(checkout_offset)));
-            provider_seen_times.push(Some(appt_dt + TimeDelta::minutes(provider_seen_offset)));
+            checkin_times.push(checkin);
+            checkout_times.push(Some(seen_base + TimeDelta::minutes(provider_seen_offset + checkout_offset)));
+            provider_seen_times.push(Some(seen_base + TimeDelta::minutes(provider_seen_offset)));
             let ekg = rng.random_bool(0.2);
             let copay = if ekg {
                 rng.random_range(150..350) // EKG visit: higher copay
@@ -268,15 +280,47 @@ pub async fn generate_visits_for_appointments(
             creation_times.push(now);
             expiry_epochs.push(expiry);
 
-            // Vitals
-            heights.push(rng.random_range(60.0..78.0f64));
-            weights.push(rng.random_range(120.0..220.0f64));
-            let sys = rng.random_range(100..160u32);
-            let dia = rng.random_range(60..100u32);
-            blood_pressures.push(format!("{}/{}", sys, dia));
-            heart_rates.push(rng.random_range(50..120i32));
-            temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
-            oxygen_saturations.push(rng.random_range(95.0..100.0f64));
+            // Vitals — ~3% have NULL height/weight/O2, ~2% have outlier values
+            let has_null_vitals = rng.random_bool(NULL_VITALS_RATE);
+            let has_outlier_vitals = !has_null_vitals && rng.random_bool(OUTLIER_VITALS_RATE);
+
+            if has_null_vitals {
+                // Null out 1-2 of the nullable vitals (height, weight, O2 sat).
+                // Blood pressure, heart rate, and temperature are always recorded.
+                let null_choice = rng.random_range(0..3u32);
+                heights.push(if null_choice == 0 || null_choice == 2 { None } else { Some(rng.random_range(60.0..78.0f64)) });
+                weights.push(if null_choice == 1 || null_choice == 2 { None } else { Some(rng.random_range(120.0..220.0f64)) });
+                let sys = rng.random_range(100..160u32);
+                let dia = rng.random_range(60..100u32);
+                blood_pressures.push(format!("{}/{}", sys, dia));
+                heart_rates.push(rng.random_range(50..120i32));
+                temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
+                oxygen_saturations.push(if null_choice >= 1 { None } else { Some(rng.random_range(95.0..100.0f64)) });
+            } else if has_outlier_vitals {
+                // Clinically extreme values: fever, hypertensive crisis, brady/tachycardia, hypoxemia
+                heights.push(Some(rng.random_range(60.0..78.0f64)));
+                weights.push(Some(rng.random_range(120.0..220.0f64)));
+                // Hypertensive crisis or hypotension
+                let sys = if rng.random_bool(0.7) { rng.random_range(180..220u32) } else { rng.random_range(70..90u32) };
+                let dia = if sys > 160 { rng.random_range(100..130u32) } else { rng.random_range(40..55u32) };
+                blood_pressures.push(format!("{}/{}", sys, dia));
+                // Severe brady or tachycardia
+                heart_rates.push(if rng.random_bool(0.5) { rng.random_range(30..45i32) } else { rng.random_range(130..180i32) });
+                // Fever, hypothermia, or normal
+                temperatures.push(if rng.random_bool(0.6) { rng.random_range(100.5..104.0f64) } else { rng.random_range(94.0..96.5f64) });
+                // Hypoxemia
+                oxygen_saturations.push(Some(rng.random_range(70.0..94.0f64)));
+            } else {
+                // Normal vitals (~95% of visits)
+                heights.push(Some(rng.random_range(60.0..78.0f64)));
+                weights.push(Some(rng.random_range(120.0..220.0f64)));
+                let sys = rng.random_range(100..160u32);
+                let dia = rng.random_range(60..100u32);
+                blood_pressures.push(format!("{}/{}", sys, dia));
+                heart_rates.push(rng.random_range(50..120i32));
+                temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
+                oxygen_saturations.push(Some(rng.random_range(95.0..100.0f64)));
+            }
         }
 
         (

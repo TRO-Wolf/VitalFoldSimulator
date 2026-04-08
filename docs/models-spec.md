@@ -284,6 +284,7 @@ pub struct Appointment {
     pub clinic_id: i64,
     pub appointment_datetime: NaiveDateTime,
     pub reason_for_visit: String,        // Drawn from diagnosis codes list
+    pub status: String,                  // "completed", "no_show", or "cancelled"
 }
 ```
 
@@ -363,12 +364,12 @@ pub struct PatientVital {
     pub patient_id: Uuid,
     pub clinic_id: i64,
     pub provider_id: i64,
-    pub height: BigDecimal,                 // DECIMAL(5,2) — inches
-    pub weight: BigDecimal,                 // DECIMAL(5,2) — pounds
-    pub blood_pressure: String,             // VARCHAR(20) — "SYS/DIA"
-    pub heart_rate: i32,                    // INT — bpm
-    pub temperature: BigDecimal,            // DECIMAL(4,1) — °F
-    pub oxygen_saturation: BigDecimal,      // DECIMAL(4,1) — %SpO2
+    pub height: Option<BigDecimal>,          // DECIMAL(5,2) NULLABLE — inches (~3% NULL)
+    pub weight: Option<BigDecimal>,          // DECIMAL(5,2) NULLABLE — pounds (~3% NULL)
+    pub blood_pressure: String,             // VARCHAR(20) NOT NULL — "SYS/DIA"
+    pub heart_rate: i32,                    // INT NOT NULL — bpm
+    pub temperature: BigDecimal,            // DECIMAL(4,1) NOT NULL — °F
+    pub oxygen_saturation: Option<BigDecimal>, // DECIMAL(4,1) NULLABLE — %SpO2 (~3% NULL)
     pub creation_time: NaiveDateTime,
     pub record_expiration_epoch: i64,
 }
@@ -471,6 +472,8 @@ pub struct SimulationCounts {
     // Aurora DSQL dynamic (date-dependent) data
     pub clinic_schedules: usize,
     pub appointments: usize,
+    pub no_shows: usize,              // ~1% of appointments
+    pub cancellations: usize,         // ~9% of appointments
     pub medical_records: usize,
     pub patient_visits: usize,
     pub patient_vitals: usize,

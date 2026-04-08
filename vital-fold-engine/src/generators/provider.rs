@@ -52,8 +52,9 @@ pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppEr
     // Build all provider data synchronously — rng dropped before any await.
     let (first_names, last_names, specialties, license_types, phones, emails, clinic_indices) = {
         let dist = WeightedIndex::new(&ctx.config.clinic_weights)
-            .unwrap_or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS)
-                .expect("default weights are valid"));
+            .or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS))
+            .map_err(|e| crate::errors::AppError::Internal(
+                format!("clinic weights invalid: {}", e)))?;
         let mut rng = rand::rng();
 
         let mut first_names:    Vec<String> = Vec::with_capacity(n);
