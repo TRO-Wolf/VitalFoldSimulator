@@ -5,6 +5,16 @@
 
 ---
 
+## [Unreleased] — Hydrate State on Startup
+
+### State Hydration (2026-04-13)
+- **New function `hydrate_counts_from_db()`** in `generators/mod.rs` — queries `COUNT(*)` on all 16 Aurora DSQL tables plus filtered counts for no-show/cancelled appointments. Returns a fully populated `SimulationCounts` struct. DynamoDB counts are left at 0 (DescribeTable item counts are delayed ~6 hours).
+- **Startup hydration in `main.rs`** — calls `hydrate_counts_from_db()` immediately after creating `SimulatorState`. On success, sets in-memory counts and logs a summary. On failure (schema not created yet, DB unreachable), logs a warning and continues with zero counts (same behavior as before this change).
+- **Fixes**: Dynamic populate (`POST /populate/dynamic`) now works after an application restart without re-running static populate, provided the static data already exists in Aurora. Also fixes: status endpoint showing all zeros after restart, static populate allowing duplicate runs after restart, and clinic schedules being unnecessarily regenerated.
+- **Safety**: Uses `usize::try_from(i64).unwrap_or(0)` for the COUNT cast (defensive against impossible negative values). No bare `.unwrap()` calls. All errors propagated via `?` operator.
+
+---
+
 ## [Unreleased] — feature/no_shows
 
 **No-Shows & Cancellations + Survey Generator + RVU Generator + BIGINT Identity Migration + Provider-Driven Appointments + Schema Consolidation**

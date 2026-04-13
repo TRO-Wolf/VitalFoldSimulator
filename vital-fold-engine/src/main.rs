@@ -162,6 +162,21 @@ async fn main() -> std::io::Result<()> {
     // Create global simulator state
     let simulator_state = web::Data::new(SimulatorState::new());
 
+    // Hydrate in-memory counts from Aurora so the app survives restarts
+    // without requiring a fresh POST /populate/static.
+    match generators::hydrate_counts_from_db(&pool).await {
+        Ok(counts) => {
+            tracing::info!(
+                "Hydrated state from database — {} patients, {} providers, {} clinics, {} appointments",
+                counts.patients, counts.providers, counts.clinics, counts.appointments
+            );
+            simulator_state.set_counts(counts);
+        }
+        Err(e) => {
+            tracing::warn!("Could not hydrate state from DB (empty or unreachable): {}", e);
+        }
+    }
+
     // Print startup banner
     tracing::info!(
         "Starting HTTP server on {}:{}",

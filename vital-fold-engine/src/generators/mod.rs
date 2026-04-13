@@ -614,6 +614,48 @@ pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppErr
     Ok(rows.into_iter().map(|(d,)| d).collect())
 }
 
+/// Hydrate `SimulationCounts` from the database so that in-memory state
+/// survives application restarts.  Queries `COUNT(*)` for every Aurora DSQL
+/// table tracked in the struct.  DynamoDB counts are left at 0 because
+/// `DescribeTable` item counts are delayed ~6 hours and unreliable.
+///
+/// # Errors
+///
+/// Returns `AppError::Database` if any query fails (e.g. the `vital_fold`
+/// schema has not been created yet via `POST /admin/init-db`).  Callers
+/// should treat this as non-fatal at startup.
+pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, AppError> {
+    /// Run a single `SELECT COUNT(*) …` and return the result as `usize`.
+    /// Clamps negative values (impossible for COUNT but defensive) to 0.
+    async fn count_table(pool: &DbPool, query: &str) -> Result<usize, AppError> {
+        let row: (i64,) = sqlx::query_as(query).fetch_one(pool).await?;
+        Ok(usize::try_from(row.0).unwrap_or(0))
+    }
+
+    Ok(SimulationCounts {
+        insurance_companies:  count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_company").await?,
+        insurance_plans:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_plan").await?,
+        clinics:              count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic").await?,
+        providers:            count_table(pool, "SELECT COUNT(*) FROM vital_fold.provider").await?,
+        patients:             count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient").await?,
+        emergency_contacts:   count_table(pool, "SELECT COUNT(*) FROM vital_fold.emergency_contact").await?,
+        patient_demographics: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_demographics").await?,
+        patient_insurance:    count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_insurance").await?,
+        clinic_schedules:     count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic_schedule").await?,
+        appointments:         count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment").await?,
+        no_shows:             count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'no_show'").await?,
+        cancellations:        count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled'").await?,
+        medical_records:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.medical_record").await?,
+        patient_visits:       count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_visit").await?,
+        patient_vitals:       count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_vitals").await?,
+        surveys:              count_table(pool, "SELECT COUNT(*) FROM vital_fold.survey").await?,
+        cpt_codes:            count_table(pool, "SELECT COUNT(*) FROM vital_fold.cpt_code").await?,
+        appointment_cpt:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment_cpt").await?,
+        // DynamoDB counts are not reliably queryable at startup.
+        dynamo_patient_visits: 0,
+        dynamo_patient_vitals: 0,
+    })
+}
 
 /// Write DynamoDB records for all visits scheduled for today by reading from Aurora.
 ///
