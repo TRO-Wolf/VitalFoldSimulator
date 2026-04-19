@@ -4,7 +4,7 @@
 --
 -- This file creates ALL tables needed by the application:
 --   1. public.users         — authentication
---   2. vital_fold.*         — 13 healthcare simulation tables
+--   2. vital_fold.*         — 16 healthcare simulation tables
 --
 -- Safe to re-run: DROP SCHEMA CASCADE + IF NOT EXISTS on public tables.
 -- Invoked by POST /admin/init-db from the admin dashboard.

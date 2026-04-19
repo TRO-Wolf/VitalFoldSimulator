@@ -149,7 +149,7 @@ All phases are **fire-and-poll**: POST returns `202 Accepted`, work runs in a ba
 
 ```bash
 git clone https://github.com/TRO-Wolf/VitalFoldSimulator.git
-cd vitalFoldEngine/vital-fold-engine
+cd VitalFoldSimulator/vital-fold-engine
 cp .env.example .env          # Edit with your DSQL endpoint + JWT secret
 cargo build --release
 cargo run --release            # Starts on http://0.0.0.0:8787

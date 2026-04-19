@@ -1,213 +1,152 @@
 # Quick Start Guide
 
-Get VitalFold Engine running in 5 minutes.
+Get VitalFold Engine running in about 10 minutes against an Aurora DSQL cluster. For the full setup walkthrough (IAM policies, table creation, cost guidance), see [INSTALLATION.md](./INSTALLATION.md).
+
+---
 
 ## 1. Prerequisites
 
+- **Rust 1.80+** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **Aurora DSQL cluster** with a reachable endpoint — see [INSTALLATION.md § AWS Prerequisites](./INSTALLATION.md#aws-prerequisites) to create one.
+- **Two DynamoDB tables**: `patient_visit` and `patient_vitals` in the same region as your DSQL cluster.
+- **AWS credentials** with `dsql:DbConnectAdmin` + DynamoDB write permissions. The default credential provider chain is used (env vars, `~/.aws/credentials`, EC2/ECS role).
+- **JWT secret** — generate with `openssl rand -base64 32`.
+
+VitalFold targets Aurora DSQL. Plain PostgreSQL is **not** supported at runtime.
+
+---
+
+## 2. Clone & Configure
+
 ```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Verify installation
-rustc --version  # Should be 1.80+
-cargo --version
-```
-
-## 2. Clone & Setup
-
-```bash
-# Clone repository
 git clone <your-repo-url>
 cd vital-fold-engine
-
-# Copy environment template
 cp .env.example .env
-
-# Edit .env with your database URL
-nano .env
-# Or use your preferred editor
 ```
 
-## 3. Setup Database
+Edit `.env` and set at minimum:
 
-### Local PostgreSQL
-```bash
-# Create database
-createdb vital_fold_db
-
-# Run migrations
-cargo sqlx migrate run
-```
-
-### OR Aurora DSQL
-Update `.env`:
 ```env
-DSQL_ENDPOINT=your-cluster.dsql.region.on.aws
-DSQL_USER=admin
-DSQL_PORT=5432
+DSQL_CLUSTER_ENDPOINT=<your-cluster-id>.dsql.us-east-1.on.aws
+DSQL_REGION=us-east-1
+JWT_SECRET=<openssl rand -base64 32>
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=<a strong password>
 ```
 
-Then run migrations:
+See `.env.example` for every supported variable and its default.
+
+---
+
+## 3. Run
+
 ```bash
-cargo sqlx migrate run
+cargo run --release
+# Server listens on 0.0.0.0:8787
 ```
 
-## 4. Start Server
+Health check:
 
 ```bash
-# Development with debug logs
-RUST_LOG=debug cargo run
-
-# Or just run (info logs)
-cargo run
-
-# Server ready: http://127.0.0.1:8787
-```
-
-## 5. Test API
-
-```bash
-# Health check
 curl http://127.0.0.1:8787/health
+```
 
-# Login
-curl -X POST http://127.0.0.1:8787/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"TestPassword123"}'
+---
 
-# Save the token from response, then test protected endpoint:
-TOKEN="your-token-from-response"
+## 4. Initialize the Schema (first run only)
 
-curl -X GET http://127.0.0.1:8787/api/v1/me \
+The engine ships with an admin endpoint that creates all 16 `vital_fold.*` tables (plus `public.users`) from `migrations/init.sql`. There is no `cargo sqlx migrate` step.
+
+```bash
+# 1) Get an admin token
+TOKEN=$(curl -s -X POST http://127.0.0.1:8787/api/v1/auth/admin-login \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  | jq -r .token)
+
+# 2) Create the schema
+curl -X POST http://127.0.0.1:8787/admin/init-db \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+Or click **Init Database** on the admin dashboard at `http://127.0.0.1:8787/`.
+
+---
+
+## 5. Populate & Simulate
+
+The data lifecycle has three phases. Run them in order:
+
+```bash
+# Phase 1 — static reference data (insurance, providers, clinics, patients, CPT codes)
+curl -X POST http://127.0.0.1:8787/populate/static \
+  -H "Authorization: Bearer $TOKEN"
+
+# Phase 2 — dynamic clinical activity for a date range
+#   (appointments, visits, vitals, medical records, surveys, CPT line items)
+curl -X POST http://127.0.0.1:8787/populate/dynamic \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"start_date":"2026-01-01","end_date":"2026-01-07"}'
+
+# Phase 3 — sync completed visits + vitals to DynamoDB
+curl -X POST http://127.0.0.1:8787/simulate/date-range \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"start_date":"2026-01-01","end_date":"2026-01-07"}'
+
+# Poll status any time
+curl http://127.0.0.1:8787/simulate/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## 6. Interactive Exploration
 
-Open browser to:
-```
-http://127.0.0.1:8787/swagger-ui/
-```
-
-Click "Authorize", enter your JWT token, explore endpoints interactively.
+- **Admin dashboard:** `http://127.0.0.1:8787/`
+- **Swagger UI:** `http://127.0.0.1:8787/swagger-ui/` — click **Authorize** and paste your bearer token.
 
 ---
 
 ## Common Commands
 
 ```bash
-# Run all tests
-cargo test
-
-# Format code
-cargo fmt
-
-# Lint code
-cargo clippy
-
-# Build release binary
-cargo build --release
-
-# Clean build artifacts
-cargo clean
-
-# Update dependencies
-cargo update
-
-# View documentation
-cargo doc --open
-```
-
----
-
-## First Simulation
-
-```bash
-TOKEN="your-jwt-token"
-
-# Start simulation
-curl -X POST http://127.0.0.1:8787/simulate \
-  -H "Authorization: Bearer $TOKEN"
-
-# Check status
-curl http://127.0.0.1:8787/simulate/status \
-  -H "Authorization: Bearer $TOKEN"
-
-# Stop simulation
-curl -X POST http://127.0.0.1:8787/simulate/stop \
-  -H "Authorization: Bearer $TOKEN"
-
-# Reset data
-curl -X POST http://127.0.0.1:8787/simulate/reset \
-  -H "Authorization: Bearer $TOKEN"
+cargo test --all-targets   # Run unit tests
+cargo clippy --all-targets # Lint
+cargo fmt                  # Format
+cargo build --release      # Release binary at target/release/vital-fold-engine
 ```
 
 ---
 
 ## Troubleshooting
 
-**"Database connection refused"**
-```bash
-# Check PostgreSQL is running
-psql -h localhost -U postgres -c "SELECT 1"
+**`Failed to load configuration`** — `DSQL_CLUSTER_ENDPOINT` or `JWT_SECRET` is missing from `.env`. `JWT_SECRET` must be ≥32 chars.
 
-# Or check .env DATABASE_URL is correct
-cat .env | grep DATABASE_URL
-```
+**`Failed to create database pool`** — AWS credentials cannot be found, or the IAM principal lacks `dsql:DbConnectAdmin` on the target cluster ARN. Verify with `aws sts get-caller-identity` and check the policy in [INSTALLATION.md § AWS Prerequisites](./INSTALLATION.md#aws-prerequisites).
 
-**"Port 8787 already in use"**
-```bash
-# Kill process using port
-lsof -ti:8787 | xargs kill -9
+**`Port 8787 already in use`** — `lsof -ti:8787 | xargs kill -9`, or set `PORT=8788` in `.env`.
 
-# Or use different port
-PORT=8888 cargo run
-```
-
-**"Migration failed"**
-```bash
-# Check migration status
-cargo sqlx migrate list
-
-# Revert and retry
-cargo sqlx migrate revert
-cargo sqlx migrate run
-```
+**`/admin/init-db` fails with a permissions error** — DSQL doesn't allow `CREATE SCHEMA` until your IAM principal has `dsql:DbConnectAdmin` (not just `dsql:DbConnect`).
 
 ---
 
 ## Next Steps
 
-- Read [README.md](./README.md) for full overview
-- See [API.md](./API.md) for endpoint documentation
-- Check [INSTALLATION.md](./INSTALLATION.md) for detailed setup
-- Review [DEVELOPMENT.md](./DEVELOPMENT.md) for development workflow
-- Study [ARCHITECTURE.md](./ARCHITECTURE.md) for technical deep-dive
-
----
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `.env` | Configuration (database, JWT secret, etc.) |
-| `src/main.rs` | Application entry point |
-| `src/routes.rs` | API routes |
-| `src/handlers/` | Request handlers |
-| `src/generators/` | Data generation logic |
-| `migrations/` | Database schema |
-| `Cargo.toml` | Dependencies |
+- [API.md](./API.md) — all 22 endpoints with curl examples
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — request flow, state, phases, scaling
+- [DEVELOPMENT.md](./DEVELOPMENT.md) — code style, adding features, debugging
+- [INSTALLATION.md](./INSTALLATION.md) — AWS setup, Docker, Render deployment
+- [../docs/dynamo.md](../docs/dynamo.md) — DynamoDB schema and TTL
+- [../docs/airflow-integration.md](../docs/airflow-integration.md) — example DAGs
 
 ---
 
 ## Project Info
 
-- **Language**: Rust 1.80+
-- **Framework**: Actix-web 4.x
-- **Database**: PostgreSQL / Aurora DSQL
-- **Authentication**: JWT + bcrypt
-- **API Docs**: Swagger UI (auto-generated)
-
----
-
-**Ready to go!** Start coding and building amazing healthcare data pipelines. 🚀
+- **Language:** Rust 1.80+ (edition 2021)
+- **Framework:** actix-web 4
+- **Database:** Amazon Aurora DSQL (PostgreSQL-compatible) + Amazon DynamoDB
+- **Authentication:** JWT (HS256) + bcrypt
+- **API docs:** Swagger UI, auto-generated via utoipa

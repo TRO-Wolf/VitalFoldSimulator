@@ -13,7 +13,7 @@
 /// **Population routes** (JWT required):
 /// - `POST /populate`               — Seed all Aurora DSQL tables (legacy, runs all 13 steps)
 /// - `POST /populate/static`        — Seed static reference data only (Step 1: 8 steps)
-/// - `POST /populate/dynamic`       — Seed date-dependent data for a date range (Step 2: 5 steps)
+/// - `POST /populate/dynamic`       — Seed date-dependent data for a date range (Step 2: 7 steps)
 /// - `GET  /populate/dates`         — List dates that already have appointments
 /// - `POST /populate/reset-dynamic` — Delete only dynamic data, preserve static reference data
 ///

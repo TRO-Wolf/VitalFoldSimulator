@@ -5,6 +5,22 @@
 
 ---
 
+## [Unreleased] — Repo Audit & Doc Sync (2026-04-19)
+
+### Fixed
+- **`engine_state.rs` mutex poisoning now logs-and-recovers** instead of panicking. Added a `recover()` helper that unwraps the poisoned guard via `into_inner()` and emits a `tracing::error!` with the field name. Replaces 12 `.expect("state mutex poisoned")` calls at [vital-fold-engine/src/engine_state.rs:205-264](vital-fold-engine/src/engine_state.rs). Brings the file into compliance with CLAUDE.md §7.1.
+
+### Documentation
+- **QUICKSTART.md rewritten** — removed the stale local-PostgreSQL path and `cargo sqlx migrate run` instructions. The new guide documents the real Aurora DSQL flow: configure `DSQL_CLUSTER_ENDPOINT` + `JWT_SECRET`, `cargo run --release`, then `POST /admin/init-db` to create the schema.
+- **INSTALLATION.md rewritten for DSQL-only** — stripped `DATABASE_URL`, `DSQL_ENDPOINT`, `DSQL_PORT`, `SQLX_OFFLINE` from the env template; removed the local-Postgres database-setup, Render Postgres option, and Postgres compose sidecar; rewrote the migration section to use `POST /admin/init-db`; troubleshooting now targets DSQL-specific failure modes (IAM policy, `dsql:DbConnectAdmin`, token refresh).
+- **CLAUDE.md §6 endpoint paths corrected** — `POST /simulate/populate-static` → `POST /populate/static`, `POST /simulate/populate-dynamic` → `POST /populate/dynamic`. Phase 2 step list expanded to the real 7 steps (was an incomplete enumeration). Doc map descriptions refined; footer date updated.
+- **routes.rs doc comment corrected** — `/populate/dynamic` documented as "5 steps" but the `DYNAMIC_TOTAL_STEPS` constant is 7. Doc comment updated to match.
+- **README.md clone path fixed** — `cd vitalFoldEngine/vital-fold-engine` → `cd VitalFoldSimulator/vital-fold-engine` (the GitHub repo is named `VitalFoldSimulator`, so that is the directory `git clone` creates).
+- **`migrations/init.sql` header comment corrected** — said "13 healthcare simulation tables", actual schema creates 16. Updated to 16.
+- **Deleted `docs/SIMULATOR_ENGINE_REFERENCE.md`** — untracked Zoo/Aquarium scaffolding that was ~80% empty TOC.
+
+---
+
 ## [Unreleased] — Hydrate State on Startup
 
 ### State Hydration (2026-04-13)

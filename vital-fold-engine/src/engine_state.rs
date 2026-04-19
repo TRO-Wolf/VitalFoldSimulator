@@ -1,8 +1,26 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use utoipa::ToSchema;
+
+/// Acquire a `MutexGuard`, recovering the inner value if the lock is poisoned.
+///
+/// Per CLAUDE.md §7.1, mutex poisoning is logged and recovered rather than
+/// propagated as a panic. The fields guarded here are independent progress
+/// records — a prior panic mid-update leaves them at a valid, if stale, state.
+fn recover<'a, T>(
+    field: &'static str,
+    result: Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>>,
+) -> MutexGuard<'a, T> {
+    result.unwrap_or_else(|poisoned| {
+        tracing::error!(
+            field,
+            "simulator state mutex was poisoned; recovering inner value"
+        );
+        poisoned.into_inner()
+    })
+}
 
 /// Per-clinic activity snapshot used by the timelapse heatmap.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -187,62 +205,62 @@ impl SimulatorState {
 
     /// Get the timestamp of the last completed run (if any).
     pub fn get_last_run(&self) -> Option<DateTime<Utc>> {
-        *self.last_run.lock().expect("state mutex poisoned")
+        *recover("last_run", self.last_run.lock())
     }
 
     /// Update the last run timestamp to now.
     pub fn set_last_run(&self, timestamp: DateTime<Utc>) {
-        *self.last_run.lock().expect("state mutex poisoned") = Some(timestamp);
+        *recover("last_run", self.last_run.lock()) = Some(timestamp);
     }
 
     /// Get a clone of the current simulation counts.
     pub fn get_counts(&self) -> SimulationCounts {
-        self.counts.lock().expect("state mutex poisoned").clone()
+        recover("counts", self.counts.lock()).clone()
     }
 
     /// Update the simulation counts.
     pub fn set_counts(&self, counts: SimulationCounts) {
-        *self.counts.lock().expect("state mutex poisoned") = counts;
+        *recover("counts", self.counts.lock()) = counts;
     }
 
     /// Get a clone of the current timelapse state (if any).
     pub fn get_timelapse(&self) -> Option<TimelapseState> {
-        self.timelapse.lock().expect("state mutex poisoned").clone()
+        recover("timelapse", self.timelapse.lock()).clone()
     }
 
     /// Update the timelapse state.
     pub fn set_timelapse(&self, state: Option<TimelapseState>) {
-        *self.timelapse.lock().expect("state mutex poisoned") = state;
+        *recover("timelapse", self.timelapse.lock()) = state;
     }
 
     /// Get a clone of the current reset progress (if any).
     pub fn get_reset_progress(&self) -> Option<ResetProgress> {
-        self.reset_progress.lock().expect("state mutex poisoned").clone()
+        recover("reset_progress", self.reset_progress.lock()).clone()
     }
 
     /// Update the reset progress.
     pub fn set_reset_progress(&self, progress: Option<ResetProgress>) {
-        *self.reset_progress.lock().expect("state mutex poisoned") = progress;
+        *recover("reset_progress", self.reset_progress.lock()) = progress;
     }
 
     /// Get a clone of the current populate progress (if any).
     pub fn get_populate_progress(&self) -> Option<PopulateProgress> {
-        self.populate_progress.lock().expect("state mutex poisoned").clone()
+        recover("populate_progress", self.populate_progress.lock()).clone()
     }
 
     /// Update the populate progress.
     pub fn set_populate_progress(&self, progress: Option<PopulateProgress>) {
-        *self.populate_progress.lock().expect("state mutex poisoned") = progress;
+        *recover("populate_progress", self.populate_progress.lock()) = progress;
     }
 
     /// Get a clone of the current DynamoDB operation progress (if any).
     pub fn get_dynamo_progress(&self) -> Option<DynamoProgress> {
-        self.dynamo_progress.lock().expect("state mutex poisoned").clone()
+        recover("dynamo_progress", self.dynamo_progress.lock()).clone()
     }
 
     /// Update the DynamoDB operation progress.
     pub fn set_dynamo_progress(&self, progress: Option<DynamoProgress>) {
-        *self.dynamo_progress.lock().expect("state mutex poisoned") = progress;
+        *recover("dynamo_progress", self.dynamo_progress.lock()) = progress;
     }
 }
 
