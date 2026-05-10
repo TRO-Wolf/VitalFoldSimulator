@@ -5,6 +5,19 @@
 
 ---
 
+## [Unreleased] — Day-of-Week Wait-Time Trend (2026-05-02)
+
+### Added
+- **Mon/Tue backlog pattern** in [vital-fold-engine/src/generators/visit.rs](vital-fold-engine/src/generators/visit.rs). Both `generate_patient_visits` and `generate_visits_for_appointments` now draw `provider_seen_offset` from a three-bucket distribution on Monday/Tuesday — 70% on-time (0–5 min), 15% moderate delay (10–25 min), 15% long tail (30–90 min). Wed–Sun unchanged. Models a realistic post-weekend backlog so gold-layer percentile dashboards (P50/P90 wait by weekday) have a non-trivial signal to surface.
+- New helper `provider_seen_offset_minutes()` in `visit.rs` encapsulates the distribution. Rates are hardcoded constants (`MON_TUE_MODERATE_DELAY_RATE`, `MON_TUE_LONG_TAIL_RATE`), matching the convention used by `LATE_ARRIVAL_RATE`/`NULL_VITALS_RATE`/`OUTLIER_VITALS_RATE`.
+- Two new unit tests in `visit.rs` (the file's first tests): `test_mon_tue_offset_distribution_has_long_tail` and `test_wed_offset_stays_within_baseline`. Use a seeded RNG so assertions are deterministic.
+- README "Visit Timing" expanded; Data Quality Traps table extended with a `Mon/Tue wait-time tail` row; new "Wait-Time Patterns" section with a `PERCENTILE_CONT` rollup example for gold-layer dashboards.
+
+### Fixed
+- `generate_patient_visits` (legacy `/populate`) was anchoring `checkout_time` to `appointment_datetime` instead of `provider_seen_time`, which could have produced checkout-before-seen anomalies once long waits were introduced. Now `checkout_time = provider_seen_time + 15..=30 min`, matching the modern function's behavior.
+
+---
+
 ## [Unreleased] — Repo Audit & Doc Sync (2026-04-19)
 
 ### Fixed

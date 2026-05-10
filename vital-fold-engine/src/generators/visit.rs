@@ -8,13 +8,41 @@
 
 use crate::db::DbPool;
 use crate::errors::AppError;
-use chrono::{NaiveDateTime, TimeDelta, Utc};
+use chrono::{Datelike, NaiveDateTime, TimeDelta, Utc, Weekday};
 use uuid::Uuid;
 
 use super::SimulationContext;
 
 /// Aurora DSQL maximum rows per transaction statement.
 const DSQL_BATCH_SIZE: usize = 2500;
+
+/// Probability that a Monday or Tuesday appointment ends up in the "moderate
+/// delay" bucket (10–25 min provider-seen delay).
+const MON_TUE_MODERATE_DELAY_RATE: f64 = 0.15;
+/// Probability that a Monday or Tuesday appointment ends up in the "long tail"
+/// bucket (30–90 min provider-seen delay).
+const MON_TUE_LONG_TAIL_RATE: f64 = 0.15;
+
+/// Sample the provider-seen-time offset (minutes after scheduled time) for an
+/// appointment. Models a realistic Mon/Tue backlog: ~30% of early-week patients
+/// experience a noticeable delay (15% moderate, 15% long-tail). Wed–Sun stays
+/// at the steady 0–5 min baseline.
+fn provider_seen_offset_minutes<R: rand::Rng>(rng: &mut R, appt_dt: NaiveDateTime) -> i64 {
+    let backlogged = matches!(appt_dt.weekday(), Weekday::Mon | Weekday::Tue);
+
+    if backlogged {
+        let p: f64 = rng.random();
+        if p < MON_TUE_LONG_TAIL_RATE {
+            rng.random_range(30..=90i64)
+        } else if p < MON_TUE_LONG_TAIL_RATE + MON_TUE_MODERATE_DELAY_RATE {
+            rng.random_range(10..=25i64)
+        } else {
+            rng.random_range(0..=5i64)
+        }
+    } else {
+        rng.random_range(0..=5i64)
+    }
+}
 
 /// Row returned when querying appointments for visit generation.
 #[derive(sqlx::FromRow)]
@@ -81,17 +109,19 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
             appointment_ids.push(appt.appointment_id);
             // Checkin: 5–15 min before scheduled appointment
             let early_arrival        = rng.random_range(5..=15i64);
-            // Provider seen: 0–5 min after scheduled time
-            let provider_seen_offset = rng.random_range(0..=5i64);
-            // Checkout: 15–30 min after scheduled time
+            // Provider seen: weekday-aware (steady 0–5 most days; fat tail on Mon/Tue)
+            let provider_seen_offset = provider_seen_offset_minutes(&mut rng, appt.appointment_datetime);
+            // Checkout: 15–30 min after the patient is seen (so a long wait
+            // also delays checkout — never produces checkout-before-seen).
             let checkout_offset      = rng.random_range(15..=30i64);
 
             patient_ids.push(appt.patient_id);
             clinic_ids.push(appt.clinic_id);
             provider_ids.push(appt.provider_id);
             checkin_times.push(appt.appointment_datetime - TimeDelta::minutes(early_arrival));
-            checkout_times.push(Some(appt.appointment_datetime + TimeDelta::minutes(checkout_offset)));
-            provider_seen_times.push(Some(appt.appointment_datetime + TimeDelta::minutes(provider_seen_offset)));
+            let provider_seen = appt.appointment_datetime + TimeDelta::minutes(provider_seen_offset);
+            provider_seen_times.push(Some(provider_seen));
+            checkout_times.push(Some(provider_seen + TimeDelta::minutes(checkout_offset)));
             let ekg = rng.random_bool(0.2);
             let copay = if ekg {
                 rng.random_range(150..350) // EKG visit: higher copay
@@ -257,9 +287,12 @@ pub async fn generate_visits_for_appointments(
             } else {
                 appt_dt - TimeDelta::minutes(rng.random_range(5..=15i64))
             };
-            // Provider seen: 0–5 min after scheduled time (or after late arrival)
+            // Provider seen: weekday-aware (steady 0–5 most days; fat tail on
+            // Mon/Tue) — anchored to checkin for late arrivals so the offset
+            // is "minutes after the patient was ready", not after the (already
+            // missed) scheduled time.
             let seen_base = if is_late { checkin } else { appt_dt };
-            let provider_seen_offset = rng.random_range(0..=5i64);
+            let provider_seen_offset = provider_seen_offset_minutes(&mut rng, appt_dt);
             // Checkout: 15–30 min after provider seen
             let checkout_offset = rng.random_range(15..=30i64);
 
@@ -406,3 +439,56 @@ pub async fn generate_visits_for_appointments(
     );
     Ok((visit_ids, ekg_usages, vitals_count))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    fn naive_at_9am(date: NaiveDate) -> NaiveDateTime {
+        date.and_hms_opt(9, 0, 0).expect("9am is a valid time")
+    }
+
+    #[test]
+    fn test_mon_tue_offset_distribution_has_long_tail() {
+        // 2024-01-01 was a Monday — verify, then sample 10k offsets.
+        let mon = naive_at_9am(NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"));
+        assert_eq!(mon.weekday(), Weekday::Mon);
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut samples: Vec<i64> = (0..10_000)
+            .map(|_| provider_seen_offset_minutes(&mut rng, mon))
+            .collect();
+        samples.sort_unstable();
+
+        let in_long_tail = samples.iter().filter(|&&v| (30..=90).contains(&v)).count();
+        let p90 = samples[(samples.len() as f64 * 0.90) as usize];
+
+        // Long-tail bucket is configured at 15%; require >=10% empirically to
+        // tolerate sampling noise on a fixed seed.
+        assert!(
+            in_long_tail >= 1_000,
+            "expected >=10% Monday samples in long-tail bucket, got {} / 10000",
+            in_long_tail
+        );
+        assert!(p90 >= 30, "expected Monday P90 >= 30 min, got {}", p90);
+    }
+
+    #[test]
+    fn test_wed_offset_stays_within_baseline() {
+        // 2024-01-03 was a Wednesday.
+        let wed = naive_at_9am(NaiveDate::from_ymd_opt(2024, 1, 3).expect("valid date"));
+        assert_eq!(wed.weekday(), Weekday::Wed);
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let max = (0..10_000)
+            .map(|_| provider_seen_offset_minutes(&mut rng, wed))
+            .max()
+            .expect("non-empty iterator");
+
+        assert!(max <= 5, "expected Wed offsets capped at 5 min, saw {}", max);
+    }
+}
+

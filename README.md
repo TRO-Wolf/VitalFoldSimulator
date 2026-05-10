@@ -68,9 +68,11 @@ Patients, providers, and appointments are distributed across clinics by configur
 - **Zip codes:** Metro-area prefix + 2 random digits (e.g., Miami → `331xx`)
 
 ### Visit Timing
-- `checkin_time`: 5-15 minutes **before** scheduled appointment (early arrival)
-- `provider_seen_time`: 0-5 minutes after scheduled time
-- `checkout_time`: 15-30 minutes after scheduled time
+- `checkin_time`: 5–15 minutes **before** scheduled appointment (early arrival)
+- `provider_seen_time`:
+  - **Wed–Sun:** 0–5 minutes after scheduled time (steady-state)
+  - **Mon/Tue:** 70% on time (0–5 min), 15% moderate delay (10–25 min), 15% long tail (30–90 min) — models the realistic post-weekend backlog
+- `checkout_time`: 15–30 minutes after `provider_seen_time` (so long waits also shift checkout, never produce a checkout-before-seen anomaly)
 
 ### Copay Structure
 - **EKG visit (~20%):** $150-$350
@@ -103,6 +105,23 @@ FROM vital_fold.appointment_cpt
 GROUP BY provider_id, month;
 ```
 
+### Wait-Time Patterns
+
+Median wait is uniform across weekdays — but the **P90 wait time on Mondays and Tuesdays is materially higher** than mid- or late-week, modeling the post-weekend backlog. Mean-based KPIs hide this; percentile aggregations expose it.
+
+```sql
+-- Median and P90 wait time by day of week (1=Mon, 2=Tue, …) —
+-- Mon/Tue P90 should be ~40-60 min while other days stay under 20 min.
+SELECT EXTRACT(ISODOW FROM a.appointment_datetime) AS day_of_week,
+       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pv.provider_seen_time - pv.checkin_time)) / 60) AS p50_wait_min,
+       PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (pv.provider_seen_time - pv.checkin_time)) / 60) AS p90_wait_min,
+       COUNT(*) AS visits
+FROM vital_fold.patient_visit pv
+JOIN vital_fold.appointment a USING (appointment_id)
+GROUP BY day_of_week
+ORDER BY day_of_week;
+```
+
 ### Data Quality Traps (Intentional)
 
 The simulator deliberately injects realistic data quality issues that downstream bronze→silver→gold pipelines must handle:
@@ -112,6 +131,7 @@ The simulator deliberately injects realistic data quality issues that downstream
 | **NULL vital signs** | ~3% of visits | `height`, `weight`, `oxygen_saturation` | `AVG()` without `NULLIF` returns wrong result |
 | **Vital sign outliers** | ~2% of visits | temp 94–104°F, BP 70–220, HR 30–180, O2 70–94% | Alert rules, percentile calculations |
 | **Late arrivals** | ~2% of visits | `checkin_time > appointment_datetime` | Negative wait-time calculations |
+| **Mon/Tue wait-time tail** | ~15% of Mon/Tue visits | `provider_seen − checkin ∈ 30–90 min` | Mean-based wait KPIs hide it; needs P90/P95 by weekday |
 | **Duplicate SSNs** | ~2% of demographics | `patient_demographics.ssn` | Identity resolution / MDM dedup |
 | **Duplicate emails** | ~3% of patients | `patient.email` | Entity resolution |
 | **Duplicate policy numbers** | ~1% of insurance | `patient_insurance.policy_number` | Claims processing uniqueness |
