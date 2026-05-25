@@ -5,6 +5,19 @@
 
 ---
 
+## [Unreleased] — Docs Reorganization (2026-05-25)
+
+### Changed
+- Promoted `CLAUDE.md` from the gitignored `.claude/` directory to the repo root and committed it. Makes the project orientation document visible to anyone browsing the repo and to Claude agents at the default discovery path.
+- Moved historical docs into `docs/history/`: `BUILD_HISTORY.md`, `DEPRECATION_HISTORY.md`, `project-origins.md`. Separates current reference material from archives — `docs/` top level is now only active documentation (models-spec, dynamo, frontend, airflow-integration).
+- Updated [CLAUDE.md](CLAUDE.md) §3 Repository layout to reflect the new tree (CLAUDE.md at root, `docs/history/` subfolder).
+
+### Removed
+- `Sonnet.md` (root) and `docs/skills/Haiku.md` — generic agent workflow rules ("Plan Mode Default", "Lessons Log"), not VitalFold documentation. Removed from the public repo. Kept locally under `.claude/` for personal reference.
+- Empty `docs/skills/` directory.
+
+---
+
 ## [Unreleased] — Day-of-Week Wait-Time Trend (2026-05-02)
 
 ### Added
