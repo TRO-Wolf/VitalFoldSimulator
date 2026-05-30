@@ -5,6 +5,18 @@
 
 ---
 
+## [Unreleased] — Directory `map.md` Navigation (2026-05-30)
+
+### Added
+- **A `map.md` in every tracked directory** (18 total) — repo root, `.github/` + `.github/workflows/`, `docs/` + `docs/history/`, the `vital-fold-engine/` crate, `migrations/`, every `src/` subdirectory (`db`, `generators`, `handlers`, `middleware`, `models`), and the `static/` tree (`css`, `js`, `js/components`, `js/pages`). Each map has five parts: Purpose, Contents, an "I want to… → Go to" routing table, Pointers (parent/child maps + related docs), and a `## Debug` section.
+- **CLAUDE.md §3.1 "Directory `map.md` navigation — mandatory"** — documents the convention: every tracked directory carries one `map.md` (excluding `.git/` and gitignored trees like `.claude/` and `target/`); read the relevant maps before editing; keep each `map.md` in lockstep with its directory in the same change.
+- §10 "task done" checklist gains item 9: update/create the touched directories' `map.md` whenever files or directories change.
+
+### Fixed
+- CLAUDE.md §3 Repository layout tree removed a stale `src/auth/` entry (no such directory exists — auth lives in `handlers/auth.rs` and `middleware/auth.rs`) and corrected the test count to 24.
+
+---
+
 ## [Unreleased] — Docs Reorganization (2026-05-25)
 
 ### Changed

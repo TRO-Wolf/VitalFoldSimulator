@@ -73,7 +73,6 @@ vitalFoldEngine/
         ├── routes.rs            Route registration
         ├── engine_state.rs      Shared SimulatorState (Arc + RwLock / Mutex)
         ├── errors.rs            AppError enum + ResponseError impl
-        ├── auth/                Password hashing helpers
         ├── db/                  PgPool setup + query helpers
         ├── middleware/auth.rs   JWT bearer validation
         ├── handlers/            HTTP handlers: auth, health, user, simulation
@@ -82,6 +81,38 @@ vitalFoldEngine/
         │                        patient, provider, rvu, survey, visit
         └── models/              sqlx::FromRow + serde structs for every table
 ```
+
+Every tracked directory also carries a `map.md` — see §3.1.
+
+### 3.1 Directory `map.md` navigation — mandatory
+
+**Every tracked directory carries a single `map.md`**, with no exceptions — including
+container directories that hold only subdirectories (e.g. `.github/`), whose map is thin and
+points down to its child maps. The *only* exclusions are version-control metadata (`.git/`) and
+git-ignored / vendored trees (`.claude/`, `target/`, anything in `.gitignore`) — these are not
+repo content and never get a `map.md`.
+
+Each `map.md` has the same five parts:
+- **Purpose** — one or two sentences on what lives here.
+- **Contents** — table of the files/subdirs and what each is.
+- **I want to… → Go to** — task-oriented routing table.
+- **Pointers** — links to the parent map, relevant child maps, and related docs.
+- **## Debug** — common failure modes for this directory and where to look.
+
+**Before editing any file:** read the `map.md` of every directory your task will touch, and use
+it to navigate.
+
+**Update rule (hard requirement — same lockstep as "update the doc in the same commit"):**
+whenever code or docs are created, changed, moved, or deleted, update that directory's `map.md`
+in the **same change** so it never drifts:
+- New directory of any kind → create its `map.md` in the same change.
+- New / renamed / deleted file → update the directory's `map.md` **Contents** and
+  **I want to…** rows.
+- Behavior, entry point, or failure mode changed → update the relevant **Purpose** / row /
+  **## Debug** section.
+
+A change is not "done" (per the §10 checklist) until the touched directories' `map.md` files
+reflect it. Code is still truth; if you find a stale `map.md`, correct it as part of your change.
 
 ---
 
@@ -251,13 +282,14 @@ Plus `public.users` (email, bcrypt password_hash) for dashboard login.
 Before you call a task "done":
 
 1. `cargo check` — zero errors, zero warnings
-2. `cargo test --all-targets` — everything green (currently 22 tests)
+2. `cargo test --all-targets` — everything green (currently 24 tests)
 3. `cargo clippy --all-targets` — clean
 4. `cargo fmt` — applied
 5. No new `.unwrap()` or `.expect()` introduced (§7.1)
 6. If you changed behavior visible to users, update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`
 7. If you changed schema, API, models, or architecture, update the corresponding doc in the same commit
 8. If you changed row counts, status shapes, or JSON responses, update [vital-fold-engine/API.md](vital-fold-engine/API.md) examples
+9. If you created, moved, renamed, or deleted any file or directory, update (or create) the touched directories' `map.md` in the same change (§3.1)
 
 ---
 
