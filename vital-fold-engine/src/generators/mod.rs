@@ -1,37 +1,39 @@
-/// Data generator modules for the simulation engine.
-///
-/// # Two-Phase Data Lifecycle
-///
-/// ## Phase 1 — POST /populate → run_populate()
-/// Seeds all Aurora DSQL tables with synthetic healthcare data:
-/// insurance companies, plans, clinics, providers, patients, emergency contacts,
-/// demographics, insurance links, clinic schedules, appointments, and medical records.
-/// Appointments are distributed across a configurable date range. No DynamoDB writes.
-///
-/// ## Phase 2 — POST /simulate → run_simulate()
-/// Called on the day of an appointment. JOINs patient_visit + patient_vitals from
-/// Aurora where checkin_time matches today, then writes to both DynamoDB tables
-/// (patient_visit and patient_vitals) for each. Models the real-world scenario
-/// where vitals and check-in data are recorded on the day of the visit.
+//! Data generator modules for the simulation engine.
+//!
+//! # Two-Phase Data Lifecycle
+//!
+//! ## Phase 1 — POST /populate → run_populate()
+//! Seeds all Aurora DSQL tables with synthetic healthcare data:
+//! insurance companies, plans, clinics, providers, patients, emergency contacts,
+//! demographics, insurance links, clinic schedules, appointments, and medical records.
+//! Appointments are distributed across a configurable date range. No DynamoDB writes.
+//!
+//! ## Phase 2 — POST /simulate → run_simulate()
+//! Called on the day of an appointment. JOINs patient_visit + patient_vitals from
+//! Aurora where checkin_time matches today, then writes to both DynamoDB tables
+//! (patient_visit and patient_vitals) for each. Models the real-world scenario
+//! where vitals and check-in data are recorded on the day of the visit.
 
-pub mod insurance;
-pub mod clinic;
-pub mod provider;
-pub mod patient;
 pub mod appointment;
+pub mod clinic;
+pub mod insurance;
 pub mod medical_record;
-pub mod visit;
-pub mod survey;
+pub mod patient;
+pub mod provider;
 pub mod rvu;
+pub mod survey;
+pub mod visit;
 
 use crate::db::DbPool;
-use crate::engine_state::{ClinicActivity, PopulateProgress, SimulationCounts, SimulatorState, TimelapseState};
+use crate::engine_state::{
+    ClinicActivity, PopulateProgress, SimulationCounts, SimulatorState, TimelapseState,
+};
 use crate::errors::AppError;
+use aws_sdk_dynamodb::Client as DynamoClient;
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use aws_sdk_dynamodb::Client as DynamoClient;
 
 /// Number of clinics in the fixed distribution.
 pub const NUM_CLINICS: usize = 10;
@@ -41,16 +43,16 @@ pub const NUM_CLINICS: usize = 10;
 ///   0: Charlotte, 1: Asheville, 2-3: Atlanta, 4: Tallahassee,
 ///   5-6: Miami, 7: Orlando, 8-9: Jacksonville
 pub const DEFAULT_CLINIC_WEIGHTS: [u32; NUM_CLINICS] = [
-    12,  // Charlotte, NC
-     3,  // Asheville, NC
-    14,  // Atlanta, GA (clinic 1)
-    14,  // Atlanta, GA (clinic 2)
-     2,  // Tallahassee, FL
-    14,  // Miami, FL (clinic 1)
-    14,  // Miami, FL (clinic 2)
-    12,  // Orlando, FL
-     8,  // Jacksonville, FL (clinic 1)
-     8,  // Jacksonville, FL (clinic 2)
+    12, // Charlotte, NC
+    3,  // Asheville, NC
+    14, // Atlanta, GA (clinic 1)
+    14, // Atlanta, GA (clinic 2)
+    2,  // Tallahassee, FL
+    14, // Miami, FL (clinic 1)
+    14, // Miami, FL (clinic 2)
+    12, // Orlando, FL
+    8,  // Jacksonville, FL (clinic 1)
+    8,  // Jacksonville, FL (clinic 2)
 ];
 
 /// Time slots per provider per day: 9 hours (8 AM–4:45 PM) × 4 quarter-hour windows.
@@ -101,23 +103,41 @@ impl Default for SimulationConfig {
 
 /// Sum all Aurora row counts for populate progress tracking.
 fn count_aurora_rows(c: &SimulationCounts) -> u64 {
-    (c.insurance_companies + c.insurance_plans + c.clinics + c.providers
-        + c.patients + c.emergency_contacts + c.patient_demographics
-        + c.patient_insurance + c.clinic_schedules + c.appointments
-        + c.medical_records + c.patient_visits + c.patient_vitals) as u64
+    (c.insurance_companies
+        + c.insurance_plans
+        + c.clinics
+        + c.providers
+        + c.patients
+        + c.emergency_contacts
+        + c.patient_demographics
+        + c.patient_insurance
+        + c.clinic_schedules
+        + c.appointments
+        + c.medical_records
+        + c.patient_visits
+        + c.patient_vitals) as u64
 }
 
 /// Sum Aurora row counts for static (reference) data only.
 fn count_static_rows(c: &SimulationCounts) -> u64 {
-    (c.insurance_companies + c.insurance_plans + c.clinics + c.providers
-        + c.patients + c.emergency_contacts + c.patient_demographics
+    (c.insurance_companies
+        + c.insurance_plans
+        + c.clinics
+        + c.providers
+        + c.patients
+        + c.emergency_contacts
+        + c.patient_demographics
         + c.patient_insurance) as u64
 }
 
 /// Sum Aurora row counts for dynamic (date-dependent) data only.
 fn count_dynamic_rows(c: &SimulationCounts) -> u64 {
-    (c.clinic_schedules + c.appointments + c.medical_records
-        + c.patient_visits + c.patient_vitals + c.surveys
+    (c.clinic_schedules
+        + c.appointments
+        + c.medical_records
+        + c.patient_visits
+        + c.patient_vitals
+        + c.surveys
         + c.appointment_cpt) as u64
 }
 
@@ -262,6 +282,7 @@ fn publish_progress(
     }));
 }
 
+/// ===========================================================================================
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// This is Phase 1 of the data lifecycle (POST /populate). It generates all
@@ -285,6 +306,8 @@ fn publish_progress(
 /// 11. Medical records (N per appointment)
 /// 12. Patient visits (one per appointment)
 /// 13. Patient vitals (one per visit)
+///
+/// ===========================================================================================
 pub async fn run_populate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -295,7 +318,8 @@ pub async fn run_populate(
 
     tracing::info!(
         "Starting populate run (appointments {} to {})",
-        ctx.config.start_date, ctx.config.end_date
+        ctx.config.start_date,
+        ctx.config.end_date
     );
     let start = Utc::now();
 
@@ -373,6 +397,7 @@ pub async fn run_populate(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Seed Aurora DSQL with static reference data only (steps 1-8).
 ///
 /// Generates insurance companies, plans, clinics, providers, patients,
@@ -380,6 +405,7 @@ pub async fn run_populate(
 /// Does NOT generate date-dependent data (appointments, schedules, etc.).
 ///
 /// Progress is published with 8 total steps.
+/// ===========================================================================================
 pub async fn run_populate_static(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -392,35 +418,83 @@ pub async fn run_populate_static(
     let start = Utc::now();
 
     // Step 1: Insurance Companies
-    publish_progress(state, 0, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        0,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     insurance::generate_insurance_companies(&mut ctx).await?;
 
     // Step 2: Insurance Plans
-    publish_progress(state, 1, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        1,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     insurance::generate_insurance_plans(&mut ctx).await?;
 
     // Step 3: Clinics
-    publish_progress(state, 2, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        2,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     clinic::generate_clinics(&mut ctx).await?;
 
     // Step 4: Providers
-    publish_progress(state, 3, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        3,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     provider::generate_providers(&mut ctx).await?;
 
     // Step 5: Patients (also inserts emergency contacts inline)
-    publish_progress(state, 4, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        4,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     patient::generate_patients(&mut ctx).await?;
 
     // Step 6: Emergency contacts — handled inside generate_patients; no-op here
-    publish_progress(state, 5, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        5,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     patient::generate_emergency_contacts(&mut ctx).await?;
 
     // Step 7: Patient Demographics
-    publish_progress(state, 6, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        6,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     patient::generate_patient_demographics(&mut ctx).await?;
 
     // Step 8: Patient Insurance
-    publish_progress(state, 7, &STATIC_STEP_NAMES, STATIC_TOTAL_STEPS, count_static_rows(&ctx.counts));
+    publish_progress(
+        state,
+        7,
+        &STATIC_STEP_NAMES,
+        STATIC_TOTAL_STEPS,
+        count_static_rows(&ctx.counts),
+    );
     patient::generate_patient_insurance(&mut ctx).await?;
 
     let duration = Utc::now().signed_duration_since(start);
@@ -446,6 +520,7 @@ pub async fn run_populate_static(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate date-dependent data for a specific date range (dynamic populate).
 ///
 /// Queries existing reference data (patients, providers, clinics) from Aurora,
@@ -456,6 +531,7 @@ pub async fn run_populate_static(
 /// Counts are updated additively so this can be called multiple times for different ranges.
 ///
 /// Requires a prior run of `run_populate_static` to have seeded reference data.
+/// ===========================================================================================
 pub async fn run_populate_dynamic(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -467,51 +543,57 @@ pub async fn run_populate_dynamic(
 ) -> Result<(), AppError> {
     tracing::info!(
         "Starting dynamic populate ({} to {}, {} records/appt, provider-based scheduling)",
-        start_date, end_date, records_per_appointment
+        start_date,
+        end_date,
+        records_per_appointment
     );
     let start = Utc::now();
 
     // Phase A: Query existing reference data from Aurora.
-    let patient_rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT patient_id FROM vital_fold.patient"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let patient_rows: Vec<(Uuid,)> = sqlx::query_as("SELECT patient_id FROM vital_fold.patient")
+        .fetch_all(&pool)
+        .await?;
 
-    let provider_rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT provider_id FROM vital_fold.provider"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let provider_rows: Vec<(i64,)> = sqlx::query_as("SELECT provider_id FROM vital_fold.provider")
+        .fetch_all(&pool)
+        .await?;
 
-    let clinic_rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT clinic_id FROM vital_fold.clinic"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let clinic_rows: Vec<(i64,)> = sqlx::query_as("SELECT clinic_id FROM vital_fold.clinic")
+        .fetch_all(&pool)
+        .await?;
 
     if patient_rows.is_empty() || provider_rows.is_empty() || clinic_rows.is_empty() {
         return Err(AppError::BadRequest(
-            "No reference data found. Run POST /populate/static first.".to_string()
+            "No reference data found. Run POST /populate/static first.".to_string(),
         ));
     }
 
     let pt_ids: Vec<Uuid> = patient_rows.into_iter().map(|(id,)| id).collect();
     let prov_ids: Vec<i64> = provider_rows.into_iter().map(|(id,)| id).collect();
-    let cl_ids: Vec<i64>   = clinic_rows.into_iter().map(|(id,)| id).collect();
+    let cl_ids: Vec<i64> = clinic_rows.into_iter().map(|(id,)| id).collect();
 
     tracing::info!(
         "Reference data loaded: {} patients, {} providers, {} clinics",
-        pt_ids.len(), prov_ids.len(), cl_ids.len()
+        pt_ids.len(),
+        prov_ids.len(),
+        cl_ids.len()
     );
 
     let mut counts = state.get_counts();
 
     // Step 1: Clinic Schedules — only on first dynamic run
-    publish_progress(state, 0, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        0,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     if counts.clinic_schedules == 0 {
         let mut ctx = SimulationContext::new(
-            pool.clone(), dynamo_client.clone(), SimulationConfig::default(),
+            pool.clone(),
+            dynamo_client.clone(),
+            SimulationConfig::default(),
         );
         ctx.provider_ids = prov_ids.clone();
         ctx.clinic_ids = cl_ids.clone();
@@ -519,23 +601,38 @@ pub async fn run_populate_dynamic(
         counts.clinic_schedules = ctx.counts.clinic_schedules;
         tracing::info!("Generated {} clinic schedules", counts.clinic_schedules);
     } else {
-        tracing::info!("Clinic schedules already exist ({}), skipping", counts.clinic_schedules);
+        tracing::info!(
+            "Clinic schedules already exist ({}), skipping",
+            counts.clinic_schedules
+        );
     }
 
     // Step 2: Appointments (each provider fills 36 slots/day at their clinic)
     // Returns all appointments including no-shows and cancellations.
-    publish_progress(state, 1, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        1,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     let appointments = appointment::generate_appointments_by_day(
-        &pool, &pt_ids, &prov_ids, &cl_ids,
-        start_date, end_date,
+        &pool,
+        &pt_ids,
+        &prov_ids,
+        &cl_ids,
+        start_date,
+        end_date,
         &clinic_weights,
-    ).await?;
+    )
+    .await?;
     let new_appointments = appointments.len();
     counts.appointments += new_appointments;
 
     // Split: only completed appointments produce downstream clinical records.
     // No-shows and cancellations stay in the appointment table but get nothing else.
-    let completed: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = appointments.iter()
+    let completed: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime)> = appointments
+        .iter()
         .filter(|(_, _, _, _, _, status)| status == "completed")
         .map(|(id, pt, cl, pv, dt, _)| (*id, *pt, *cl, *pv, *dt))
         .collect();
@@ -545,35 +642,69 @@ pub async fn run_populate_dynamic(
     counts.cancellations += cancellations;
     tracing::info!(
         "Appointment status split: {} completed, {} no-show, {} cancelled",
-        completed.len(), no_shows, cancellations
+        completed.len(),
+        no_shows,
+        cancellations
     );
 
     // Step 3: Medical Records (completed appointments only)
-    publish_progress(state, 2, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        2,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     let new_medical_records = medical_record::generate_medical_records_for_range(
-        &pool, &completed, records_per_appointment,
-    ).await?;
+        &pool,
+        &completed,
+        records_per_appointment,
+    )
+    .await?;
     counts.medical_records += new_medical_records;
 
     // Step 4: Patient Visits (completed appointments only)
-    publish_progress(state, 3, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
-    let (visit_ids, ekg_flags, new_vitals) = visit::generate_visits_for_appointments(
-        &pool, &completed,
-    ).await?;
+    publish_progress(
+        state,
+        3,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
+    let (visit_ids, ekg_flags, new_vitals) =
+        visit::generate_visits_for_appointments(&pool, &completed).await?;
     let new_visits = visit_ids.len();
     counts.patient_visits += new_visits;
 
     // Step 5: Patient Vitals (already generated above, just track count)
-    publish_progress(state, 4, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        4,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     counts.patient_vitals += new_vitals;
 
     // Step 6: Surveys (~30% of visits fill one out)
-    publish_progress(state, 5, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        5,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     let new_surveys = survey::generate_surveys_for_visits(&pool, &visit_ids).await?;
     counts.surveys += new_surveys;
 
     // Step 7: Billing line-items (completed appointments only — ekg_flags aligns 1:1)
-    publish_progress(state, 6, &DYNAMIC_STEP_NAMES, DYNAMIC_TOTAL_STEPS, count_dynamic_rows(&counts));
+    publish_progress(
+        state,
+        6,
+        &DYNAMIC_STEP_NAMES,
+        DYNAMIC_TOTAL_STEPS,
+        count_dynamic_rows(&counts),
+    );
     let new_cpt = rvu::generate_appointment_cpt(&pool, &completed, &ekg_flags).await?;
     counts.appointment_cpt += new_cpt;
 
@@ -600,13 +731,15 @@ pub async fn run_populate_dynamic(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Query distinct dates that have appointments in Aurora DSQL.
 ///
 /// Returns dates sorted ascending. Used by the frontend calendar to show
 /// which dates are already populated.
+/// ===========================================================================================
 pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppError> {
     let rows: Vec<(NaiveDate,)> = sqlx::query_as(
-        "SELECT DISTINCT appointment_datetime::date as d FROM vital_fold.appointment ORDER BY d"
+        "SELECT DISTINCT appointment_datetime::date as d FROM vital_fold.appointment ORDER BY d",
     )
     .fetch_all(pool)
     .await?;
@@ -614,6 +747,7 @@ pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppErr
     Ok(rows.into_iter().map(|(d,)| d).collect())
 }
 
+/// ===========================================================================================
 /// Hydrate `SimulationCounts` from the database so that in-memory state
 /// survives application restarts.  Queries `COUNT(*)` for every Aurora DSQL
 /// table tracked in the struct.  DynamoDB counts are left at 0 because
@@ -624,6 +758,7 @@ pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppErr
 /// Returns `AppError::Database` if any query fails (e.g. the `vital_fold`
 /// schema has not been created yet via `POST /admin/init-db`).  Callers
 /// should treat this as non-fatal at startup.
+/// ===========================================================================================
 pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, AppError> {
     /// Run a single `SELECT COUNT(*) …` and return the result as `usize`.
     /// Clamps negative values (impossible for COUNT but defensive) to 0.
@@ -633,30 +768,50 @@ pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, A
     }
 
     Ok(SimulationCounts {
-        insurance_companies:  count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_company").await?,
-        insurance_plans:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_plan").await?,
-        clinics:              count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic").await?,
-        providers:            count_table(pool, "SELECT COUNT(*) FROM vital_fold.provider").await?,
-        patients:             count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient").await?,
-        emergency_contacts:   count_table(pool, "SELECT COUNT(*) FROM vital_fold.emergency_contact").await?,
-        patient_demographics: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_demographics").await?,
-        patient_insurance:    count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_insurance").await?,
-        clinic_schedules:     count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic_schedule").await?,
-        appointments:         count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment").await?,
-        no_shows:             count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'no_show'").await?,
-        cancellations:        count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled'").await?,
-        medical_records:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.medical_record").await?,
-        patient_visits:       count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_visit").await?,
-        patient_vitals:       count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_vitals").await?,
-        surveys:              count_table(pool, "SELECT COUNT(*) FROM vital_fold.survey").await?,
-        cpt_codes:            count_table(pool, "SELECT COUNT(*) FROM vital_fold.cpt_code").await?,
-        appointment_cpt:      count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment_cpt").await?,
+        insurance_companies: count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_company")
+            .await?,
+        insurance_plans: count_table(pool, "SELECT COUNT(*) FROM vital_fold.insurance_plan")
+            .await?,
+        clinics: count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic").await?,
+        providers: count_table(pool, "SELECT COUNT(*) FROM vital_fold.provider").await?,
+        patients: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient").await?,
+        emergency_contacts: count_table(pool, "SELECT COUNT(*) FROM vital_fold.emergency_contact")
+            .await?,
+        patient_demographics: count_table(
+            pool,
+            "SELECT COUNT(*) FROM vital_fold.patient_demographics",
+        )
+        .await?,
+        patient_insurance: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_insurance")
+            .await?,
+        clinic_schedules: count_table(pool, "SELECT COUNT(*) FROM vital_fold.clinic_schedule")
+            .await?,
+        appointments: count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment").await?,
+        no_shows: count_table(
+            pool,
+            "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'no_show'",
+        )
+        .await?,
+        cancellations: count_table(
+            pool,
+            "SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled'",
+        )
+        .await?,
+        medical_records: count_table(pool, "SELECT COUNT(*) FROM vital_fold.medical_record")
+            .await?,
+        patient_visits: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_visit").await?,
+        patient_vitals: count_table(pool, "SELECT COUNT(*) FROM vital_fold.patient_vitals").await?,
+        surveys: count_table(pool, "SELECT COUNT(*) FROM vital_fold.survey").await?,
+        cpt_codes: count_table(pool, "SELECT COUNT(*) FROM vital_fold.cpt_code").await?,
+        appointment_cpt: count_table(pool, "SELECT COUNT(*) FROM vital_fold.appointment_cpt")
+            .await?,
         // DynamoDB counts are not reliably queryable at startup.
         dynamo_patient_visits: 0,
         dynamo_patient_vitals: 0,
     })
 }
 
+/// ===========================================================================================
 /// Write DynamoDB records for all visits scheduled for today by reading from Aurora.
 ///
 /// This is Phase 2 of the data lifecycle (POST /simulate). It JOINs patient_visit
@@ -665,6 +820,7 @@ pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, A
 ///
 /// The semaphore caps concurrency at 40 in-flight DynamoDB requests to stay
 /// within DynamoDB's 4,000 WCU on-demand throughput limit per table.
+/// ===========================================================================================
 pub async fn run_simulate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -684,7 +840,7 @@ pub async fn run_simulate(
                 vt.temperature, vt.oxygen_saturation \
          FROM vital_fold.patient_visit v \
          JOIN vital_fold.patient_vitals vt ON v.patient_visit_id = vt.patient_visit_id \
-         WHERE v.checkin_time::date = CURRENT_DATE"
+         WHERE v.checkin_time::date = CURRENT_DATE",
     )
     .fetch_all(&pool)
     .await?;
@@ -704,13 +860,23 @@ pub async fn run_simulate(
 
     // Diagnostic: confirm the DynamoDB tables are reachable.
     for table_name in &["patient_visit", "patient_vitals"] {
-        match dynamo_client.describe_table().table_name(*table_name).send().await {
+        match dynamo_client
+            .describe_table()
+            .table_name(*table_name)
+            .send()
+            .await
+        {
             Ok(resp) => {
-                let status = resp.table()
+                let status = resp
+                    .table()
                     .and_then(|t| t.table_status())
                     .map(|s| s.as_str())
                     .unwrap_or("unknown");
-                tracing::info!("DynamoDB table '{}' is reachable, status={}", table_name, status);
+                tracing::info!(
+                    "DynamoDB table '{}' is reachable, status={}",
+                    table_name,
+                    status
+                );
             }
             Err(e) => {
                 tracing::error!("DynamoDB table '{}' NOT reachable: {:?}", table_name, e);
@@ -727,7 +893,10 @@ pub async fn run_simulate(
 
     for visit in &visits {
         // Write to patient_visit table
-        let permit = sem.clone().acquire_owned().await
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
             .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
         let client = dynamo_client.clone();
         let v = visit.clone();
@@ -738,7 +907,10 @@ pub async fn run_simulate(
         }));
 
         // Write to patient_vitals table
-        let permit = sem.clone().acquire_owned().await
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
             .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
         let client = dynamo_client.clone();
         let v = visit.clone();
@@ -771,7 +943,10 @@ pub async fn run_simulate(
     tracing::info!(
         "Simulate complete in {:.2}s — {}/{} visit writes, {}/{} vitals writes",
         duration.num_milliseconds() as f64 / 1000.0,
-        visit_writes_ok, total, vitals_writes_ok, total,
+        visit_writes_ok,
+        total,
+        vitals_writes_ok,
+        total,
     );
 
     // Use actual success counts so the dashboard reflects reality.
@@ -799,6 +974,7 @@ struct ClinicCount {
     cnt: i64,
 }
 
+/// ===========================================================================================
 /// Run a timelapse visualization across multiple days.
 ///
 /// Queries Aurora for appointment counts per clinic per hour-window, updating
@@ -807,6 +983,7 @@ struct ClinicCount {
 ///
 /// Each simulated day is subdivided into 8 hour-windows (9am–5pm). The real-time
 /// interval between windows is `day_interval_secs / 8`.
+/// ===========================================================================================
 #[allow(dead_code)]
 pub async fn run_timelapse(
     pool: DbPool,
@@ -814,14 +991,17 @@ pub async fn run_timelapse(
     total_days: usize,
     day_interval_secs: u64,
 ) -> Result<(), AppError> {
-    tracing::info!("Starting timelapse — {} days, {}s per day", total_days, day_interval_secs);
+    tracing::info!(
+        "Starting timelapse — {} days, {}s per day",
+        total_days,
+        day_interval_secs
+    );
 
     // 1. Fetch clinic metadata for display labels.
-    let clinics: Vec<ClinicMeta> = sqlx::query_as(
-        "SELECT clinic_id, city, state FROM vital_fold.clinic"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let clinics: Vec<ClinicMeta> =
+        sqlx::query_as("SELECT clinic_id, city, state FROM vital_fold.clinic")
+            .fetch_all(&pool)
+            .await?;
 
     let clinic_map: HashMap<i64, (String, String)> = clinics
         .iter()
@@ -836,7 +1016,7 @@ pub async fn run_timelapse(
     // 2. Find the date range of existing appointments.
     let range: Option<(NaiveDate, NaiveDate)> = sqlx::query_as(
         "SELECT MIN(appointment_datetime::date), MAX(appointment_datetime::date) \
-         FROM vital_fold.appointment"
+         FROM vital_fold.appointment",
     )
     .fetch_optional(&pool)
     .await?;
@@ -854,9 +1034,7 @@ pub async fn run_timelapse(
     let window_sleep = tokio::time::Duration::from_secs(day_interval_secs / 8);
     let mut current_date = min_date;
     let mut day_number: usize = 0;
-    let actual_total = total_days.min(
-        (max_date - min_date).num_days() as usize + 1
-    );
+    let actual_total = total_days.min((max_date - min_date).num_days() as usize + 1);
 
     // 3. Day loop.
     while current_date <= max_date && day_number < total_days {
@@ -880,17 +1058,15 @@ pub async fn run_timelapse(
                  WHERE appointment_datetime::date = $1 \
                    AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
                    AND status = 'completed' \
-                 GROUP BY clinic_id"
+                 GROUP BY clinic_id",
             )
             .bind(current_date)
             .bind(hour as i32)
             .fetch_all(&pool)
             .await?;
 
-            let count_map: HashMap<i64, i64> = counts
-                .into_iter()
-                .map(|c| (c.clinic_id, c.cnt))
-                .collect();
+            let count_map: HashMap<i64, i64> =
+                counts.into_iter().map(|c| (c.clinic_id, c.cnt)).collect();
 
             // Build ClinicActivity for every clinic (0 if no appointments this window).
             let clinic_activity: Vec<ClinicActivity> = clinics
@@ -957,17 +1133,15 @@ async fn animate_single_day(
              WHERE appointment_datetime::date = $1 \
                AND EXTRACT(HOUR FROM appointment_datetime) = $2 \
                AND status = 'completed' \
-             GROUP BY clinic_id"
+             GROUP BY clinic_id",
         )
         .bind(date)
         .bind(hour as i32)
         .fetch_all(pool)
         .await?;
 
-        let count_map: HashMap<i64, i64> = counts
-            .into_iter()
-            .map(|c| (c.clinic_id, c.cnt))
-            .collect();
+        let count_map: HashMap<i64, i64> =
+            counts.into_iter().map(|c| (c.clinic_id, c.cnt)).collect();
 
         let clinic_activity: Vec<ClinicActivity> = clinics
             .iter()
@@ -1002,11 +1176,13 @@ async fn animate_single_day(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Run a single-day heatmap for today's appointments.
 ///
 /// If DynamoDB hasn't been populated yet (dynamo_patient_visits == 0), auto-triggers
 /// `run_simulate` first to write patient_visit records, then animates
 /// hour-by-hour (9am–5pm) appointment counts per clinic.
+/// ===========================================================================================
 pub async fn run_today_heatmap(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -1021,11 +1197,10 @@ pub async fn run_today_heatmap(
         }
     }
 
-    let clinics: Vec<ClinicMeta> = sqlx::query_as(
-        "SELECT clinic_id, city, state FROM vital_fold.clinic"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let clinics: Vec<ClinicMeta> =
+        sqlx::query_as("SELECT clinic_id, city, state FROM vital_fold.clinic")
+            .fetch_all(&pool)
+            .await?;
 
     if clinics.is_empty() {
         tracing::warn!("Heatmap: no clinics found. Run POST /populate first.");
@@ -1033,28 +1208,33 @@ pub async fn run_today_heatmap(
     }
 
     let today = Utc::now().date_naive();
-    tracing::info!("Heatmap: animating {} with {}s per window", today, window_interval_secs);
+    tracing::info!(
+        "Heatmap: animating {} with {}s per window",
+        today,
+        window_interval_secs
+    );
     animate_single_day(&pool, state, today, &clinics, window_interval_secs).await?;
     tracing::info!("Heatmap complete for {}", today);
 
     Ok(())
 }
 
+/// ===========================================================================================
 /// Replay heatmap animation using existing Aurora appointment data (read-only).
 ///
 /// Unlike `run_today_heatmap`, this does **not** auto-populate DynamoDB.
 /// It queries only Aurora for appointment counts per clinic per hour,
 /// making it safe for non-admin users.
+/// ===========================================================================================
 pub async fn run_heatmap_replay(
     pool: DbPool,
     state: &SimulatorState,
     window_interval_secs: u64,
 ) -> Result<(), AppError> {
-    let clinics: Vec<ClinicMeta> = sqlx::query_as(
-        "SELECT clinic_id, city, state FROM vital_fold.clinic"
-    )
-    .fetch_all(&pool)
-    .await?;
+    let clinics: Vec<ClinicMeta> =
+        sqlx::query_as("SELECT clinic_id, city, state FROM vital_fold.clinic")
+            .fetch_all(&pool)
+            .await?;
 
     if clinics.is_empty() {
         tracing::warn!("Replay: no clinics found. Run POST /populate first.");
@@ -1062,13 +1242,18 @@ pub async fn run_heatmap_replay(
     }
 
     let today = Utc::now().date_naive();
-    tracing::info!("Replay: animating {} with {}s per window", today, window_interval_secs);
+    tracing::info!(
+        "Replay: animating {} with {}s per window",
+        today,
+        window_interval_secs
+    );
     animate_single_day(&pool, state, today, &clinics, window_interval_secs).await?;
     tracing::info!("Replay complete for {}", today);
 
     Ok(())
 }
 
+/// ===========================================================================================
 /// Sync existing Aurora visit + vitals data to DynamoDB for a specific date range.
 ///
 /// Reads from patient_visit JOIN patient_vitals in Aurora and writes to both
@@ -1076,6 +1261,7 @@ pub async fn run_heatmap_replay(
 ///
 /// Progress is published to `DynamoProgress` so the UI can show a live progress bar.
 /// Requires a prior Dynamic Populate run to have created visits for the target dates.
+/// ===========================================================================================
 pub async fn run_date_range_simulate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -1087,7 +1273,8 @@ pub async fn run_date_range_simulate(
 
     tracing::info!(
         "Starting date-range DynamoDB sync: {} to {}",
-        start_date, end_date
+        start_date,
+        end_date
     );
     let start = Utc::now();
 
@@ -1113,7 +1300,7 @@ pub async fn run_date_range_simulate(
                 vt.temperature, vt.oxygen_saturation \
          FROM vital_fold.patient_visit v \
          JOIN vital_fold.patient_vitals vt ON v.patient_visit_id = vt.patient_visit_id \
-         WHERE v.checkin_time::date >= $1 AND v.checkin_time::date <= $2"
+         WHERE v.checkin_time::date >= $1 AND v.checkin_time::date <= $2",
     )
     .bind(start_date)
     .bind(end_date)
@@ -1123,7 +1310,8 @@ pub async fn run_date_range_simulate(
     if visits.is_empty() {
         tracing::warn!(
             "Date-range DynamoDB sync: 0 visits found for {} to {}. Nothing to sync.",
-            start_date, end_date
+            start_date,
+            end_date
         );
         state.set_last_run(Utc::now());
         state.set_dynamo_progress(None);
@@ -1136,7 +1324,9 @@ pub async fn run_date_range_simulate(
 
     tracing::info!(
         "Date-range DynamoDB sync: found {} visits to write for {} to {}",
-        visits.len(), start_date, end_date
+        visits.len(),
+        start_date,
+        end_date
     );
 
     state.set_dynamo_progress(Some(DynamoProgress {
@@ -1161,7 +1351,10 @@ pub async fn run_date_range_simulate(
         }
 
         // Write to patient_visit table
-        let permit = sem.clone().acquire_owned().await
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
             .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
         let client = dynamo_client.clone();
         let v = visit.clone();
@@ -1172,7 +1365,10 @@ pub async fn run_date_range_simulate(
         }));
 
         // Write to patient_vitals table
-        let permit = sem.clone().acquire_owned().await
+        let permit = sem
+            .clone()
+            .acquire_owned()
+            .await
             .map_err(|_| AppError::Internal("DynamoDB semaphore closed unexpectedly".into()))?;
         let client = dynamo_client.clone();
         let v = visit.clone();
@@ -1231,7 +1427,10 @@ pub async fn run_date_range_simulate(
         "Date-range DynamoDB sync complete in {:.2}s — \
          {}/{} visit writes, {}/{} vitals writes",
         duration.num_milliseconds() as f64 / 1000.0,
-        visit_writes_ok, visits.len(), vitals_writes_ok, visits.len(),
+        visit_writes_ok,
+        visits.len(),
+        vitals_writes_ok,
+        visits.len(),
     );
 
     // Mark complete.
@@ -1247,8 +1446,8 @@ pub async fn run_date_range_simulate(
 
     // Update state with DynamoDB write counts only.
     let mut counts = state.get_counts();
-    counts.dynamo_patient_visits  += visit_writes_ok;
-    counts.dynamo_patient_vitals  += vitals_writes_ok;
+    counts.dynamo_patient_visits += visit_writes_ok;
+    counts.dynamo_patient_vitals += vitals_writes_ok;
     state.set_last_run(Utc::now());
     state.set_counts(counts);
 

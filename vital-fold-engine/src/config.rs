@@ -54,11 +54,9 @@ impl Config {
         let dsql_endpoint = std::env::var("DSQL_CLUSTER_ENDPOINT")
             .map_err(|_| anyhow!("DSQL_CLUSTER_ENDPOINT is required"))?;
 
-        let dsql_region =
-            std::env::var("DSQL_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        let dsql_region = std::env::var("DSQL_REGION").unwrap_or_else(|_| "us-east-1".to_string());
 
-        let dsql_db_name =
-            std::env::var("DSQL_DB_NAME").unwrap_or_else(|_| "postgres".to_string());
+        let dsql_db_name = std::env::var("DSQL_DB_NAME").unwrap_or_else(|_| "postgres".to_string());
 
         let dsql_user = std::env::var("DSQL_USER").unwrap_or_else(|_| "admin".to_string());
 
@@ -67,8 +65,8 @@ impl Config {
             .parse::<usize>()
             .map_err(|e| anyhow!("DB_POOL_SIZE must be a valid usize: {}", e))?;
 
-        let jwt_secret = std::env::var("JWT_SECRET")
-            .map_err(|_| anyhow!("JWT_SECRET is required"))?;
+        let jwt_secret =
+            std::env::var("JWT_SECRET").map_err(|_| anyhow!("JWT_SECRET is required"))?;
 
         if jwt_secret.len() < 32 {
             return Err(anyhow!(
@@ -103,8 +101,6 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_jwt_secret_validation() {
         // This test would require mocking environment variables

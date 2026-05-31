@@ -1,43 +1,49 @@
-/// Simulation and population control endpoints.
-///
-/// # Two-Phase Data Lifecycle
-///
-/// ## POST /populate — start_populate()
-/// Seeds all Aurora DSQL tables with synthetic healthcare data:
-/// patients, providers, clinics, appointments (1–89 days out), medical records, etc.
-/// Returns 202 Accepted immediately; runs in a background task.
-/// Poll GET /simulate/status to check completion.
-///
-/// ## POST /simulate — start_simulate()
-/// Runs the day-of simulation: queries Aurora for appointments scheduled today,
-/// then writes to both DynamoDB tables (patient_visit + patient_vitals) for each.
-/// Models real-time EHR data capture on the day of the visit.
-/// Returns 202 Accepted immediately; runs in a background task.
-///
-/// Both endpoints are guarded by a single running flag — only one may be active at a time.
+//! Simulation and population control endpoints.
+//!
+//! # Two-Phase Data Lifecycle
+//!
+//! ## POST /populate — start_populate()
+//! Seeds all Aurora DSQL tables with synthetic healthcare data:
+//! patients, providers, clinics, appointments (1–89 days out), medical records, etc.
+//! Returns 202 Accepted immediately; runs in a background task.
+//! Poll GET /simulate/status to check completion.
+//!
+//! ## POST /simulate — start_simulate()
+//! Runs the day-of simulation: queries Aurora for appointments scheduled today,
+//! then writes to both DynamoDB tables (patient_visit + patient_vitals) for each.
+//! Models real-time EHR data capture on the day of the visit.
+//! Returns 202 Accepted immediately; runs in a background task.
+//!
+//! Both endpoints are guarded by a single running flag — only one may be active at a time.
 
 use crate::db::DbPool;
 use crate::engine_state::SimulatorState;
 use crate::errors::AppError;
-use crate::generators::{run_populate, run_populate_static, run_populate_dynamic, get_populated_dates, run_simulate, run_date_range_simulate, run_today_heatmap, run_heatmap_replay, SimulationConfig, NUM_CLINICS, DEFAULT_CLINIC_WEIGHTS};
-use chrono::NaiveDate;
-use std::collections::HashSet;
+use crate::generators::{
+    get_populated_dates, run_date_range_simulate, run_heatmap_replay, run_populate,
+    run_populate_dynamic, run_populate_static, run_simulate, run_today_heatmap, SimulationConfig,
+    DEFAULT_CLINIC_WEIGHTS, NUM_CLINICS,
+};
 use crate::models::{MessageResponse, SimulationStatusResponse};
 use actix_web::{web, HttpResponse};
-use aws_sdk_dynamodb::Client as DynamoClient;
 use aws_sdk_dynamodb::types::{DeleteRequest, WriteRequest};
+use aws_sdk_dynamodb::Client as DynamoClient;
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Validate and resolve clinic weights from an optional API input.
 /// Returns DEFAULT_CLINIC_WEIGHTS if None, or validates length and positivity.
 fn resolve_clinic_weights(input: Option<Vec<u32>>) -> Result<Vec<u32>, AppError> {
     match input {
         None => Ok(DEFAULT_CLINIC_WEIGHTS.to_vec()),
-        Some(w) if w.len() != NUM_CLINICS => Err(AppError::BadRequest(
-            format!("clinic_weights must have exactly {} entries (one per clinic), got {}", NUM_CLINICS, w.len()),
-        )),
-        Some(w) if w.iter().any(|&v| v == 0) => Err(AppError::BadRequest(
+        Some(w) if w.len() != NUM_CLINICS => Err(AppError::BadRequest(format!(
+            "clinic_weights must have exactly {} entries (one per clinic), got {}",
+            NUM_CLINICS,
+            w.len()
+        ))),
+        Some(w) if w.contains(&0) => Err(AppError::BadRequest(
             "clinic_weights entries must all be > 0".to_string(),
         )),
         Some(w) => Ok(w),
@@ -79,8 +85,7 @@ pub struct PopulateRequest {
     pub clinic_weights: Option<Vec<u32>>,
 }
 
-
-
+/// ===========================================================================================
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// Generates insurance companies (7 fixed), insurance plans, clinics (10 fixed SE US),
@@ -98,6 +103,7 @@ pub struct PopulateRequest {
 /// If a run is already in progress, returns 409 Conflict.
 /// Otherwise, spawns an async background task and returns 202 Accepted.
 /// Poll `GET /simulate/status` to track progress via the `populate_progress` field.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate",
@@ -132,16 +138,24 @@ pub async fn start_populate(
             let req = json.into_inner();
             let nonzero = |v: Option<usize>, d: usize| v.filter(|&n| n > 0).unwrap_or(d);
 
-            let start_date = req.start_date.as_ref()
+            let start_date = req
+                .start_date
+                .as_ref()
                 .map(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d"))
                 .transpose()
-                .map_err(|_| AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string()))?
+                .map_err(|_| {
+                    AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string())
+                })?
                 .unwrap_or(defaults.start_date);
 
-            let end_date = req.end_date.as_ref()
+            let end_date = req
+                .end_date
+                .as_ref()
                 .map(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d"))
                 .transpose()
-                .map_err(|_| AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string()))?
+                .map_err(|_| {
+                    AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string())
+                })?
                 .unwrap_or(defaults.end_date);
 
             if start_date > end_date {
@@ -153,10 +167,13 @@ pub async fn start_populate(
             let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
 
             SimulationConfig {
-                plans_per_company:        nonzero(req.plans_per_company,        defaults.plans_per_company),
-                providers:                nonzero(req.providers,                defaults.providers),
-                patients:                 nonzero(req.patients,                 defaults.patients),
-                records_per_appointment:  nonzero(req.records_per_appointment,  defaults.records_per_appointment),
+                plans_per_company: nonzero(req.plans_per_company, defaults.plans_per_company),
+                providers: nonzero(req.providers, defaults.providers),
+                patients: nonzero(req.patients, defaults.patients),
+                records_per_appointment: nonzero(
+                    req.records_per_appointment,
+                    defaults.records_per_appointment,
+                ),
                 start_date,
                 end_date,
                 clinic_weights,
@@ -173,9 +190,9 @@ pub async fn start_populate(
         ));
     }
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_populate(pool_clone, dynamo_clone, config, &state_clone).await {
@@ -242,6 +259,7 @@ pub struct DynamicPopulateRequest {
     pub clinic_weights: Option<Vec<u32>>,
 }
 
+/// ===========================================================================================
 /// Seed Aurora DSQL with static reference data only (Step 1).
 ///
 /// Generates insurance companies (7), plans, clinics (10), providers, patients,
@@ -251,6 +269,7 @@ pub struct DynamicPopulateRequest {
 /// Run POST /populate/dynamic to generate those.
 ///
 /// Returns 409 if static data already exists (patients > 0). Reset first.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/static",
@@ -290,8 +309,8 @@ pub async fn start_populate_static(
             let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
             SimulationConfig {
                 plans_per_company: nonzero(req.plans_per_company, defaults.plans_per_company),
-                providers:         nonzero(req.providers,         defaults.providers),
-                patients:          nonzero(req.patients,          defaults.patients),
+                providers: nonzero(req.providers, defaults.providers),
+                patients: nonzero(req.patients, defaults.patients),
                 clinic_weights,
                 ..defaults
             }
@@ -305,9 +324,9 @@ pub async fn start_populate_static(
         ));
     }
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_populate_static(pool_clone, dynamo_clone, config, &state_clone).await {
@@ -326,6 +345,7 @@ pub async fn start_populate_static(
     }))
 }
 
+/// ===========================================================================================
 /// Generate date-dependent data for a specific date range (Step 2).
 ///
 /// Generates clinic schedules (first run only), appointments, medical records,
@@ -338,6 +358,7 @@ pub async fn start_populate_static(
 ///
 /// Returns 400 if no static data exists or if the date range overlaps
 /// already-populated dates.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/dynamic",
@@ -373,10 +394,12 @@ pub async fn start_populate_dynamic(
     }
 
     // Parse and validate dates.
-    let start_date = NaiveDate::parse_from_str(&req.start_date, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string()))?;
-    let end_date = NaiveDate::parse_from_str(&req.end_date, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string()))?;
+    let start_date = NaiveDate::parse_from_str(&req.start_date, "%Y-%m-%d").map_err(|_| {
+        AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string())
+    })?;
+    let end_date = NaiveDate::parse_from_str(&req.end_date, "%Y-%m-%d").map_err(|_| {
+        AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string())
+    })?;
 
     if start_date > end_date {
         return Err(AppError::BadRequest(
@@ -422,17 +445,22 @@ pub async fn start_populate_dynamic(
     let records_per_appointment = nonzero(req.records_per_appointment, 1);
     let clinic_weights = resolve_clinic_weights(req.clinic_weights)?;
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_populate_dynamic(
-            pool_clone, dynamo_clone, &state_clone,
-            start_date, end_date,
+            pool_clone,
+            dynamo_clone,
+            &state_clone,
+            start_date,
+            end_date,
             records_per_appointment,
             clinic_weights,
-        ).await {
+        )
+        .await
+        {
             Ok(_) => {
                 tracing::info!("Dynamic populate completed successfully");
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -451,10 +479,12 @@ pub async fn start_populate_dynamic(
     }))
 }
 
+/// ===========================================================================================
 /// Return the distinct dates that have appointments in Aurora DSQL.
 ///
 /// Used by the frontend calendar to show which dates are already populated
 /// and prevent double-population.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/populate/dates",
@@ -470,7 +500,10 @@ pub async fn get_populated_dates_handler(
     pool: web::Data<DbPool>,
 ) -> Result<HttpResponse, AppError> {
     let dates = get_populated_dates(pool.get_ref()).await?;
-    let date_strings: Vec<String> = dates.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect();
+    let date_strings: Vec<String> = dates
+        .iter()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .collect();
     Ok(HttpResponse::Ok().json(date_strings))
 }
 
@@ -478,20 +511,42 @@ pub async fn get_populated_dates_handler(
 /// survey is deleted before patient_visit because it logically references
 /// patient_visit_id (even though Aurora DSQL does not enforce FKs).
 const DYNAMIC_RESET_TABLES: &[(&str, &str, &str)] = &[
-    ("vital_fold.survey",          "survey_id",          "Surveys"),
-    ("vital_fold.appointment_cpt", "appointment_cpt_id", "Billing (CPT/RVU)"),
-    ("vital_fold.patient_vitals",  "patient_visit_id",   "Patient Vitals"),
-    ("vital_fold.patient_visit",   "patient_visit_id",   "Patient Visits"),
-    ("vital_fold.medical_record",  "medical_record_id",  "Medical Records"),
-    ("vital_fold.appointment",     "appointment_id",     "Appointments"),
-    ("vital_fold.clinic_schedule", "schedule_id",        "Clinic Schedules"),
+    ("vital_fold.survey", "survey_id", "Surveys"),
+    (
+        "vital_fold.appointment_cpt",
+        "appointment_cpt_id",
+        "Billing (CPT/RVU)",
+    ),
+    (
+        "vital_fold.patient_vitals",
+        "patient_visit_id",
+        "Patient Vitals",
+    ),
+    (
+        "vital_fold.patient_visit",
+        "patient_visit_id",
+        "Patient Visits",
+    ),
+    (
+        "vital_fold.medical_record",
+        "medical_record_id",
+        "Medical Records",
+    ),
+    ("vital_fold.appointment", "appointment_id", "Appointments"),
+    (
+        "vital_fold.clinic_schedule",
+        "schedule_id",
+        "Clinic Schedules",
+    ),
 ];
 
+/// ===========================================================================================
 /// Delete only dynamic data (schedules, appointments, records, visits),
 /// preserving static reference data (patients, providers, clinics, insurance).
 ///
 /// Useful for re-populating with different date ranges without regenerating
 /// the 50,000+ static reference records.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/reset-dynamic",
@@ -514,12 +569,12 @@ pub async fn reset_dynamic_data(
         ));
     }
 
-    let pool_clone  = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_dynamic_reset(&pool_clone, &state_clone).await {
-            Ok(_)  => tracing::info!("Dynamic reset completed successfully"),
+            Ok(_) => tracing::info!("Dynamic reset completed successfully"),
             Err(e) => tracing::error!("Dynamic reset failed: {}", e),
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -535,10 +590,7 @@ pub async fn reset_dynamic_data(
 }
 
 /// Background worker that deletes only dynamic Aurora DSQL rows with progress tracking.
-async fn run_dynamic_reset(
-    pool: &DbPool,
-    state: &SimulatorState,
-) -> Result<(), AppError> {
+async fn run_dynamic_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), AppError> {
     use crate::engine_state::ResetProgress;
 
     const MAX_RETRIES: u32 = 5;
@@ -574,7 +626,10 @@ async fn run_dynamic_reset(
                             let delay_ms = BACKOFF_BASE_MS * (1 << (attempt - 1));
                             tracing::warn!(
                                 "Aurora OC000 on '{}' (attempt {}/{}), retrying in {}ms",
-                                table, attempt, MAX_RETRIES, delay_ms
+                                table,
+                                attempt,
+                                MAX_RETRIES,
+                                delay_ms
                             );
                             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         } else {
@@ -623,7 +678,7 @@ async fn run_dynamic_reset(
     Ok(())
 }
 
-
+/// ===========================================================================================
 /// Write DynamoDB records for all appointments scheduled for today.
 ///
 /// Queries Aurora DSQL for appointments where `appointment_datetime::date = CURRENT_DATE`,
@@ -636,6 +691,7 @@ async fn run_dynamic_reset(
 ///
 /// If no appointments are found for today, returns 202 with a warning logged.
 /// If a run is already in progress, returns 409 Conflict.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate",
@@ -662,13 +718,13 @@ pub async fn start_simulate(
         ));
     }
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_simulate(pool_clone, dynamo_clone, &state_clone).await {
-            Ok(_)  => tracing::info!("Simulate completed successfully"),
+            Ok(_) => tracing::info!("Simulate completed successfully"),
             Err(e) => tracing::error!("Simulate failed: {}", e),
         }
         state_clone.stop();
@@ -680,8 +736,6 @@ pub async fn start_simulate(
         message: "Simulation started".to_string(),
     }))
 }
-
-
 
 /// Request body for date-range DynamoDB sync.
 /// Syncs existing Aurora patient visit data to DynamoDB for a specific date range.
@@ -697,6 +751,7 @@ pub struct DateRangeRequest {
     pub end_date: String,
 }
 
+/// ===========================================================================================
 /// Sync existing Aurora visit data to DynamoDB for a date range.
 ///
 /// Reads patient_visit + patient_vitals from Aurora for the specified date range
@@ -706,6 +761,7 @@ pub struct DateRangeRequest {
 /// If no visits exist for the date range, returns 400 Bad Request.
 ///
 /// The date range is inclusive on both ends. Maximum range is 90 days.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/date-range",
@@ -732,10 +788,12 @@ pub async fn start_date_range_simulate(
     body: web::Json<DateRangeRequest>,
 ) -> Result<HttpResponse, AppError> {
     // Parse and validate dates.
-    let start_date = NaiveDate::parse_from_str(&body.start_date, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string()))?;
-    let end_date = NaiveDate::parse_from_str(&body.end_date, "%Y-%m-%d")
-        .map_err(|_| AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string()))?;
+    let start_date = NaiveDate::parse_from_str(&body.start_date, "%Y-%m-%d").map_err(|_| {
+        AppError::BadRequest("Invalid start_date format. Use YYYY-MM-DD.".to_string())
+    })?;
+    let end_date = NaiveDate::parse_from_str(&body.end_date, "%Y-%m-%d").map_err(|_| {
+        AppError::BadRequest("Invalid end_date format. Use YYYY-MM-DD.".to_string())
+    })?;
 
     if start_date > end_date {
         return Err(AppError::BadRequest(
@@ -761,7 +819,7 @@ pub async fn start_date_range_simulate(
     // Pre-flight: verify that visits exist in Aurora for this date range.
     let visit_count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM vital_fold.patient_visit \
-         WHERE checkin_time::date >= $1 AND checkin_time::date <= $2"
+         WHERE checkin_time::date >= $1 AND checkin_time::date <= $2",
     )
     .bind(start_date)
     .bind(end_date)
@@ -774,25 +832,22 @@ pub async fn start_date_range_simulate(
 
     if visit_count.0 == 0 {
         state.stop();
-        return Err(AppError::BadRequest(
-            format!(
-                "No patient visits found in Aurora for {} to {}. \
+        return Err(AppError::BadRequest(format!(
+            "No patient visits found in Aurora for {} to {}. \
                  Run Dynamic Populate for this date range first.",
-                body.start_date, body.end_date
-            )
-        ));
+            body.start_date, body.end_date
+        )));
     }
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
-        match run_date_range_simulate(
-            pool_clone, dynamo_clone, &state_clone,
-            start_date, end_date,
-        ).await {
-            Ok(_)  => tracing::info!("Date-range DynamoDB sync completed successfully"),
+        match run_date_range_simulate(pool_clone, dynamo_clone, &state_clone, start_date, end_date)
+            .await
+        {
+            Ok(_) => tracing::info!("Date-range DynamoDB sync completed successfully"),
             Err(e) => tracing::error!("Date-range DynamoDB sync failed: {}", e),
         }
         // Keep the "complete" state visible for a few poll cycles, then clear.
@@ -803,7 +858,9 @@ pub async fn start_date_range_simulate(
 
     tracing::info!(
         "Date-range DynamoDB sync started: {} to {} ({} visits)",
-        body.start_date, body.end_date, visit_count.0
+        body.start_date,
+        body.end_date,
+        visit_count.0
     );
 
     Ok(HttpResponse::Accepted().json(MessageResponse {
@@ -814,9 +871,11 @@ pub async fn start_date_range_simulate(
     }))
 }
 
+/// ===========================================================================================
 /// Stop the currently running populate or simulate job.
 ///
 /// Sets the running flag to false. The background task will exit gracefully.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/stop",
@@ -839,8 +898,7 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
     }))
 }
 
-
-
+/// ===========================================================================================
 /// Get the current run status and counts from the last completed job.
 ///
 /// Returns whether a populate or simulate job is currently running, the timestamp
@@ -853,6 +911,7 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
 ///
 /// DynamoDB counts (set by POST /simulate):
 ///   dynamo_patient_visits
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/status",
@@ -867,13 +926,13 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
     )
 )]
 pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse, AppError> {
-    let running  = state.is_running();
+    let running = state.is_running();
     let last_run = state.get_last_run();
-    let counts   = state.get_counts();
+    let counts = state.get_counts();
 
-    let reset_progress    = state.get_reset_progress();
+    let reset_progress = state.get_reset_progress();
     let populate_progress = state.get_populate_progress();
-    let dynamo_progress   = state.get_dynamo_progress();
+    let dynamo_progress = state.get_dynamo_progress();
 
     let response = SimulationStatusResponse {
         running,
@@ -887,11 +946,13 @@ pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse
     Ok(HttpResponse::Ok().json(response))
 }
 
+/// ===========================================================================================
 /// Query live record counts from Aurora DSQL and DynamoDB.
 ///
 /// Runs `SELECT COUNT(*)` against every Aurora table and uses
 /// `Scan` with `Select::Count` on both DynamoDB tables for exact counts.
 /// Returns the same shape as `SimulationCounts` but with actual database values.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/db-counts",
@@ -912,7 +973,25 @@ pub async fn get_db_counts(
     use crate::engine_state::SimulationCounts;
 
     // Main counts: 16 scalar sub-selects (sqlx tuple max).
-    let row: (i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64,i64) = sqlx::query_as(
+    type DbCountRow = (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    );
+    let row: DbCountRow = sqlx::query_as(
         "SELECT \
             (SELECT COUNT(*) FROM vital_fold.insurance_company),  \
             (SELECT COUNT(*) FROM vital_fold.insurance_plan),     \
@@ -929,7 +1008,7 @@ pub async fn get_db_counts(
             (SELECT COUNT(*) FROM vital_fold.patient_vitals),     \
             (SELECT COUNT(*) FROM vital_fold.survey),             \
             (SELECT COUNT(*) FROM vital_fold.cpt_code),           \
-            (SELECT COUNT(*) FROM vital_fold.appointment_cpt)"
+            (SELECT COUNT(*) FROM vital_fold.appointment_cpt)",
     )
     .fetch_one(pool.get_ref())
     .await?;
@@ -938,7 +1017,7 @@ pub async fn get_db_counts(
     let status_row: (i64, i64) = sqlx::query_as(
         "SELECT \
             (SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'no_show'), \
-            (SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled')"
+            (SELECT COUNT(*) FROM vital_fold.appointment WHERE status = 'cancelled')",
     )
     .fetch_one(pool.get_ref())
     .await?;
@@ -950,24 +1029,24 @@ pub async fn get_db_counts(
     );
 
     let counts = SimulationCounts {
-        insurance_companies:   row.0  as usize,
-        insurance_plans:       row.1  as usize,
-        clinics:               row.2  as usize,
-        providers:             row.3  as usize,
-        patients:              row.4  as usize,
-        emergency_contacts:    row.5  as usize,
-        patient_demographics:  row.6  as usize,
-        patient_insurance:     row.7  as usize,
-        clinic_schedules:      row.8  as usize,
-        appointments:          row.9  as usize,
-        no_shows:              status_row.0 as usize,
-        cancellations:         status_row.1 as usize,
-        medical_records:       row.10 as usize,
-        patient_visits:        row.11 as usize,
-        patient_vitals:        row.12 as usize,
-        surveys:               row.13 as usize,
-        cpt_codes:             row.14 as usize,
-        appointment_cpt:       row.15 as usize,
+        insurance_companies: row.0 as usize,
+        insurance_plans: row.1 as usize,
+        clinics: row.2 as usize,
+        providers: row.3 as usize,
+        patients: row.4 as usize,
+        emergency_contacts: row.5 as usize,
+        patient_demographics: row.6 as usize,
+        patient_insurance: row.7 as usize,
+        clinic_schedules: row.8 as usize,
+        appointments: row.9 as usize,
+        no_shows: status_row.0 as usize,
+        cancellations: status_row.1 as usize,
+        medical_records: row.10 as usize,
+        patient_visits: row.11 as usize,
+        patient_vitals: row.12 as usize,
+        surveys: row.13 as usize,
+        cpt_codes: row.14 as usize,
+        appointment_cpt: row.15 as usize,
         dynamo_patient_visits: dyn_visits,
         dynamo_patient_vitals: dyn_vitals,
     };
@@ -1019,6 +1098,7 @@ pub struct TimelapseRequest {
     pub window_interval_secs: Option<u64>,
 }
 
+/// ===========================================================================================
 /// Start a single-day heatmap visualization for today's appointments.
 ///
 /// Animates hour-by-hour (9am–5pm) appointment counts per clinic on the
@@ -1029,6 +1109,7 @@ pub struct TimelapseRequest {
 /// frontend heatmap canvas.
 ///
 /// Default: `window_interval_secs=5` (~40 seconds for the full day sweep).
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/timelapse",
@@ -1061,18 +1142,21 @@ pub async fn start_timelapse(
         ));
     }
 
-    let interval = body.as_ref().and_then(|b| b.window_interval_secs).unwrap_or(5);
+    let interval = body
+        .as_ref()
+        .and_then(|b| b.window_interval_secs)
+        .unwrap_or(5);
 
     // Clear any previous timelapse state
     state.set_timelapse(None);
 
-    let pool_clone   = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let dynamo_clone = dynamo.get_ref().clone();
-    let state_clone  = state.clone();
+    let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_today_heatmap(pool_clone, dynamo_clone, &state_clone, interval).await {
-            Ok(_)  => tracing::info!("Heatmap completed successfully"),
+            Ok(_) => tracing::info!("Heatmap completed successfully"),
             Err(e) => tracing::error!("Heatmap failed: {}", e),
         }
         state_clone.stop();
@@ -1085,8 +1169,7 @@ pub async fn start_timelapse(
     }))
 }
 
-
-
+/// ===========================================================================================
 /// Get the current timelapse heatmap state.
 ///
 /// Returns per-clinic appointment activity for the current simulated day and hour.
@@ -1094,6 +1177,7 @@ pub async fn start_timelapse(
 /// frontend heatmap visualization.
 ///
 /// Returns `{ "active": false }` if no timelapse has been started.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/heatmap",
@@ -1114,11 +1198,13 @@ pub async fn get_heatmap(state: web::Data<SimulatorState>) -> Result<HttpRespons
     }
 }
 
+/// ===========================================================================================
 /// Start a read-only heatmap replay using existing Aurora appointment data.
 ///
 /// Unlike `start_timelapse`, this does **not** write to or read from DynamoDB.
 /// It replays the hour-by-hour animation for today's appointments, making it
 /// safe for non-admin users.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/replay",
@@ -1150,16 +1236,19 @@ pub async fn start_replay(
         ));
     }
 
-    let interval = body.as_ref().and_then(|b| b.window_interval_secs).unwrap_or(5);
+    let interval = body
+        .as_ref()
+        .and_then(|b| b.window_interval_secs)
+        .unwrap_or(5);
 
     state.set_timelapse(None);
 
-    let pool_clone  = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_heatmap_replay(pool_clone, &state_clone, interval).await {
-            Ok(_)  => tracing::info!("Replay completed successfully"),
+            Ok(_) => tracing::info!("Replay completed successfully"),
             Err(e) => tracing::error!("Replay failed: {}", e),
         }
         state_clone.stop();
@@ -1172,7 +1261,9 @@ pub async fn start_replay(
     }))
 }
 
+/// ===========================================================================================
 /// Clear the heatmap replay state without deleting any data.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/replay-reset",
@@ -1185,9 +1276,7 @@ pub async fn start_replay(
         (status = 401, description = "Unauthorized", body = String)
     )
 )]
-pub async fn reset_replay(
-    state: web::Data<SimulatorState>,
-) -> Result<HttpResponse, AppError> {
+pub async fn reset_replay(state: web::Data<SimulatorState>) -> Result<HttpResponse, AppError> {
     state.set_timelapse(None);
     tracing::info!("Replay state cleared");
     Ok(HttpResponse::Ok().json(MessageResponse {
@@ -1230,10 +1319,12 @@ pub struct VisitorsResponse {
     pub clinics: Vec<ClinicVisitors>,
 }
 
+/// ===========================================================================================
 /// Get today's visitors (patient names) grouped by clinic.
 ///
 /// Joins `appointment`, `patient`, and `clinic` tables to return the first/last name
 /// of every patient with an appointment today, grouped by clinic with city/state info.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/visitors",
@@ -1247,9 +1338,7 @@ pub struct VisitorsResponse {
         (status = 500, description = "Internal server error", body = String)
     )
 )]
-pub async fn get_visitors(
-    pool: web::Data<DbPool>,
-) -> Result<HttpResponse, AppError> {
+pub async fn get_visitors(pool: web::Data<DbPool>) -> Result<HttpResponse, AppError> {
     let rows: Vec<VisitorRow> = sqlx::query_as(
         "SELECT p.first_name, p.last_name, c.clinic_name, c.city, c.state, \
                 EXTRACT(HOUR FROM a.appointment_datetime)::INTEGER as hour \
@@ -1258,7 +1347,7 @@ pub async fn get_visitors(
          JOIN vital_fold.clinic c ON c.clinic_id = a.clinic_id \
          WHERE a.appointment_datetime::date = CURRENT_DATE \
            AND a.status = 'completed' \
-         ORDER BY c.clinic_name, a.appointment_datetime"
+         ORDER BY c.clinic_name, a.appointment_datetime",
     )
     .fetch_all(pool.get_ref())
     .await?;
@@ -1298,8 +1387,7 @@ pub async fn get_visitors(
     }))
 }
 
-
-
+/// ===========================================================================================
 /// Reset all data by deleting all rows from vital_fold schema tables.
 ///
 /// WARNING: This is destructive. All generated Aurora DSQL data will be deleted.
@@ -1313,6 +1401,7 @@ pub async fn get_visitors(
 /// Aurora DSQL does not support TRUNCATE or ctid. Rows are deleted in 2500-row
 /// batches using `DELETE FROM t WHERE pk IN (SELECT pk FROM t LIMIT 2500)`,
 /// looped per table until all rows are gone.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/reset",
@@ -1337,12 +1426,12 @@ pub async fn reset_data(
         ));
     }
 
-    let pool_clone  = pool.get_ref().clone();
+    let pool_clone = pool.get_ref().clone();
     let state_clone = state.clone();
 
     tokio::spawn(async move {
         match run_aurora_reset(&pool_clone, &state_clone).await {
-            Ok(_)  => tracing::info!("Aurora reset completed successfully"),
+            Ok(_) => tracing::info!("Aurora reset completed successfully"),
             Err(e) => tracing::error!("Aurora reset failed: {}", e),
         }
         // Keep the "complete" state visible for a few poll cycles, then clear.
@@ -1363,29 +1452,66 @@ pub async fn reset_data(
 /// patient_visit_id (even though Aurora DSQL does not enforce FKs).
 /// appointment_cpt is deleted before appointment + cpt_code for the same reason.
 const RESET_TABLES: &[(&str, &str, &str)] = &[
-    ("vital_fold.survey",               "survey_id",             "Surveys"),
-    ("vital_fold.appointment_cpt",      "appointment_cpt_id",    "Billing (CPT/RVU)"),
-    ("vital_fold.patient_vitals",       "patient_visit_id",      "Patient Vitals"),
-    ("vital_fold.patient_visit",        "patient_visit_id",      "Patient Visits"),
-    ("vital_fold.medical_record",       "medical_record_id",     "Medical Records"),
-    ("vital_fold.appointment",          "appointment_id",        "Appointments"),
-    ("vital_fold.clinic_schedule",      "schedule_id",           "Clinic Schedules"),
-    ("vital_fold.cpt_code",             "cpt_code_id",           "CPT Codes"),
-    ("vital_fold.patient_insurance",    "patient_insurance_id",  "Patient Insurance"),
-    ("vital_fold.patient_demographics", "demographics_id",       "Demographics"),
-    ("vital_fold.emergency_contact",    "emergency_contact_id",  "Emergency Contacts"),
-    ("vital_fold.patient",              "patient_id",            "Patients"),
-    ("vital_fold.provider",             "provider_id",           "Providers"),
-    ("vital_fold.clinic",               "clinic_id",             "Clinics"),
-    ("vital_fold.insurance_plan",       "insurance_plan_id",     "Insurance Plans"),
-    ("vital_fold.insurance_company",    "company_id",            "Insurance Companies"),
+    ("vital_fold.survey", "survey_id", "Surveys"),
+    (
+        "vital_fold.appointment_cpt",
+        "appointment_cpt_id",
+        "Billing (CPT/RVU)",
+    ),
+    (
+        "vital_fold.patient_vitals",
+        "patient_visit_id",
+        "Patient Vitals",
+    ),
+    (
+        "vital_fold.patient_visit",
+        "patient_visit_id",
+        "Patient Visits",
+    ),
+    (
+        "vital_fold.medical_record",
+        "medical_record_id",
+        "Medical Records",
+    ),
+    ("vital_fold.appointment", "appointment_id", "Appointments"),
+    (
+        "vital_fold.clinic_schedule",
+        "schedule_id",
+        "Clinic Schedules",
+    ),
+    ("vital_fold.cpt_code", "cpt_code_id", "CPT Codes"),
+    (
+        "vital_fold.patient_insurance",
+        "patient_insurance_id",
+        "Patient Insurance",
+    ),
+    (
+        "vital_fold.patient_demographics",
+        "demographics_id",
+        "Demographics",
+    ),
+    (
+        "vital_fold.emergency_contact",
+        "emergency_contact_id",
+        "Emergency Contacts",
+    ),
+    ("vital_fold.patient", "patient_id", "Patients"),
+    ("vital_fold.provider", "provider_id", "Providers"),
+    ("vital_fold.clinic", "clinic_id", "Clinics"),
+    (
+        "vital_fold.insurance_plan",
+        "insurance_plan_id",
+        "Insurance Plans",
+    ),
+    (
+        "vital_fold.insurance_company",
+        "company_id",
+        "Insurance Companies",
+    ),
 ];
 
 /// Background worker that deletes all Aurora DSQL rows with progress tracking.
-async fn run_aurora_reset(
-    pool: &DbPool,
-    state: &SimulatorState,
-) -> Result<(), AppError> {
+async fn run_aurora_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), AppError> {
     use crate::engine_state::ResetProgress;
 
     const MAX_RETRIES: u32 = 5;
@@ -1422,7 +1548,10 @@ async fn run_aurora_reset(
                             let delay_ms = BACKOFF_BASE_MS * (1 << (attempt - 1));
                             tracing::warn!(
                                 "Aurora OC000 on '{}' (attempt {}/{}), retrying in {}ms",
-                                table, attempt, MAX_RETRIES, delay_ms
+                                table,
+                                attempt,
+                                MAX_RETRIES,
+                                delay_ms
                             );
                             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         } else {
@@ -1482,8 +1611,7 @@ async fn run_aurora_reset(
     Ok(())
 }
 
-
-
+/// ===========================================================================================
 /// Delete all items from both DynamoDB tables.
 ///
 /// WARNING: Destructive. Scans each table and deletes all items in batches.
@@ -1491,6 +1619,7 @@ async fn run_aurora_reset(
 ///
 /// Runs in a background task with progress tracking via `DynamoProgress`.
 /// Returns 202 Accepted immediately. Poll `GET /simulate/status` to track progress.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/reset-dynamo",
@@ -1520,7 +1649,7 @@ pub async fn reset_dynamo(
 
     tokio::spawn(async move {
         match run_dynamo_reset(&dynamo_clone, &state_clone).await {
-            Ok(_)  => tracing::info!("DynamoDB reset completed successfully"),
+            Ok(_) => tracing::info!("DynamoDB reset completed successfully"),
             Err(e) => tracing::error!("DynamoDB reset failed: {}", e),
         }
         // Keep the "complete" state visible for a few poll cycles, then clear.
@@ -1537,15 +1666,17 @@ pub async fn reset_dynamo(
 }
 
 /// Background worker that deletes all DynamoDB items with progress tracking.
-async fn run_dynamo_reset(
-    dynamo: &DynamoClient,
-    state: &SimulatorState,
-) -> Result<(), AppError> {
+async fn run_dynamo_reset(dynamo: &DynamoClient, state: &SimulatorState) -> Result<(), AppError> {
     use crate::engine_state::DynamoProgress;
 
     const DYNAMO_TABLES: &[(&str, &str, &str, &str)] = &[
-        ("patient_visit",  "patient_id", "clinic_id", "Patient Visits"),
-        ("patient_vitals", "patient_id", "clinic_id", "Patient Vitals"),
+        ("patient_visit", "patient_id", "clinic_id", "Patient Visits"),
+        (
+            "patient_vitals",
+            "patient_id",
+            "clinic_id",
+            "Patient Vitals",
+        ),
     ];
 
     let total_tables = DYNAMO_TABLES.len();
@@ -1563,9 +1694,17 @@ async fn run_dynamo_reset(
         }));
 
         let deleted = delete_dynamo_table_with_progress(
-            dynamo, state, table, pk_name, sk_name, display_name,
-            i, total_tables, cumulative_deleted,
-        ).await?;
+            dynamo,
+            state,
+            table,
+            pk_name,
+            sk_name,
+            display_name,
+            i,
+            total_tables,
+            cumulative_deleted,
+        )
+        .await?;
 
         cumulative_deleted += deleted;
         tracing::info!("Deleted {} items from DynamoDB table '{}'", deleted, table);
@@ -1589,9 +1728,6 @@ async fn run_dynamo_reset(
 
     Ok(())
 }
-
-
-
 
 /// Scan a DynamoDB table and delete every item using BatchWriteItem, publishing
 /// progress to `DynamoProgress` after each chunk.
@@ -1635,10 +1771,9 @@ async fn delete_dynamo_table_with_progress(
             scan = scan.set_exclusive_start_key(Some(key.clone()));
         }
 
-        let scan_result = scan
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("DynamoDB scan failed on '{}': {:?}", table, e)))?;
+        let scan_result = scan.send().await.map_err(|e| {
+            AppError::Internal(format!("DynamoDB scan failed on '{}': {:?}", table, e))
+        })?;
 
         let items = scan_result.items.unwrap_or_default();
         last_key = scan_result.last_evaluated_key;
@@ -1678,7 +1813,11 @@ async fn delete_dynamo_table_with_progress(
                     {
                         Ok(resp) => {
                             let unprocessed = resp.unprocessed_items.unwrap_or_default();
-                            pending = if unprocessed.is_empty() { None } else { Some(unprocessed) };
+                            pending = if unprocessed.is_empty() {
+                                None
+                            } else {
+                                Some(unprocessed)
+                            };
                             attempt = 0;
                         }
                         Err(e) => {
@@ -1688,9 +1827,13 @@ async fn delete_dynamo_table_with_progress(
                                 let delay_ms = BACKOFF_BASE_MS * (1 << (attempt - 1));
                                 tracing::warn!(
                                     "DynamoDB throttled on '{}' (attempt {}/{}), backing off {}ms",
-                                    table, attempt, MAX_RETRIES, delay_ms
+                                    table,
+                                    attempt,
+                                    MAX_RETRIES,
+                                    delay_ms
                                 );
-                                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms))
+                                    .await;
                                 pending = Some(batch);
                             } else {
                                 state.set_dynamo_progress(None);
@@ -1732,6 +1875,7 @@ async fn delete_dynamo_table_with_progress(
 // Database Initialization
 // =============================================================================
 
+/// ===========================================================================================
 /// Initialize (or re-initialize) the database schema.
 ///
 /// Reads `migrations/init.sql` and executes it against Aurora DSQL.
@@ -1739,6 +1883,7 @@ async fn delete_dynamo_table_with_progress(
 /// The `public.users` table is created with IF NOT EXISTS (safe for re-runs).
 ///
 /// **Destructive** — requires confirmation from the admin dashboard.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/admin/init-db",
@@ -1773,7 +1918,8 @@ pub async fn init_database(
 
     let mut executed = 0usize;
     for statement in sql.split(';') {
-        let cleaned: String = statement.lines()
+        let cleaned: String = statement
+            .lines()
             .filter(|line| !line.trim_start().starts_with("--"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1794,12 +1940,18 @@ pub async fn init_database(
                         let delay_ms = BACKOFF_BASE_MS * (1u64 << (attempt - 1));
                         tracing::warn!(
                             "Init DB OC retry on statement '{}...' (attempt {}/{}), sleeping {}ms",
-                            &trimmed[..trimmed.len().min(80)], attempt, MAX_RETRIES, delay_ms
+                            &trimmed[..trimmed.len().min(80)],
+                            attempt,
+                            MAX_RETRIES,
+                            delay_ms
                         );
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
                         continue;
                     }
-                    tracing::error!("Init DB failed on statement: {}", &trimmed[..trimmed.len().min(120)]);
+                    tracing::error!(
+                        "Init DB failed on statement: {}",
+                        &trimmed[..trimmed.len().min(120)]
+                    );
                     return Err(AppError::Internal(format!("Schema init failed: {}", e)));
                 }
             }
@@ -1811,7 +1963,10 @@ pub async fn init_database(
     state.set_counts(crate::engine_state::SimulationCounts::default());
     state.set_last_run(chrono::Utc::now());
 
-    tracing::info!("Database initialized successfully ({} statements executed)", executed);
+    tracing::info!(
+        "Database initialized successfully ({} statements executed)",
+        executed
+    );
 
     Ok(HttpResponse::Ok().json(MessageResponse {
         message: format!("Schema initialized — {} SQL statements executed", executed),

@@ -16,8 +16,6 @@ pub struct Clinic {
     pub email: String,
 }
 
-
-
 /// Provider schedule for a specific clinic.
 /// One row per provider-clinic-day combination.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

@@ -1,11 +1,11 @@
-/// Generate clinics with fixed geographic distribution.
-///
-/// The company operates 10 clinics across SE US with specific city/state distribution.
-/// Clinic schedules are generated for provider-clinic pairs.
+//! Generate clinics with fixed geographic distribution.
+//!
+//! The company operates 10 clinics across SE US with specific city/state distribution.
+//! Clinic schedules are generated for provider-clinic pairs.
 
 use chrono::NaiveTime;
-use fake::Fake;
 use fake::faker::address::en::StreetName;
+use fake::Fake;
 use rand::Rng;
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
@@ -26,8 +26,8 @@ fn gen_phone(rng: &mut impl Rng) -> String {
     )
 }
 
-use crate::errors::AppError;
 use super::SimulationContext;
+use crate::errors::AppError;
 
 /// Fixed clinic distribution: (city, state)
 const CLINIC_DISTRIBUTION: &[(&str, &str, &str)] = &[
@@ -49,7 +49,9 @@ const STREET_SUFFIXES: &[&str] = &[
     "Blvd", "Ave", "Dr", "Pkwy", "Way", "Ln", "Ct", "Rd", "St", "Pl",
 ];
 
+/// ===========================================================================================
 /// Generate the 10 fixed clinics and insert them into the database.
+/// ===========================================================================================
 pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppError> {
     // Track city occurrence count for duplicate cities (Atlanta×2, Miami×2, Jacksonville×2)
     let mut city_count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -60,7 +62,12 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
         let occurrence = *count;
 
         // Clinic name: append number only for cities with multiple clinics
-        let clinic_name = if CLINIC_DISTRIBUTION.iter().filter(|(c, _, _)| c == city).count() > 1 {
+        let clinic_name = if CLINIC_DISTRIBUTION
+            .iter()
+            .filter(|(c, _, _)| c == city)
+            .count()
+            > 1
+        {
             format!("VitalFold Heart Center - {} {}", city, occurrence)
         } else {
             format!("VitalFold Heart Center - {}", city)
@@ -84,7 +91,12 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
 
         // Email matches clinic identity: vfhc_miami1@vitalfold.org
         let city_slug = city.to_lowercase().replace(' ', "");
-        let email = if CLINIC_DISTRIBUTION.iter().filter(|(c, _, _)| c == city).count() > 1 {
+        let email = if CLINIC_DISTRIBUTION
+            .iter()
+            .filter(|(c, _, _)| c == city)
+            .count()
+            > 1
+        {
             format!("vfhc_{}{}@vitalfold.org", city_slug, occurrence)
         } else {
             format!("vfhc_{}@vitalfold.org", city_slug)
@@ -118,12 +130,14 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate clinic schedules for provider-clinic pairs.
 ///
 /// Each provider is scheduled at their primary clinic (from `provider_clinic_assignments`).
 /// ~30% of providers also work at a second random clinic. Each works 3-5 days per week.
 /// If `provider_clinic_assignments` is empty (e.g. dynamic populate path), falls back
 /// to the old behavior of 1-2 random clinics.
+/// ===========================================================================================
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
     let open_time = NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default();
@@ -137,7 +151,8 @@ pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<()
             let mut rng = rng();
             if has_assignments {
                 // Primary clinic from proportional assignment
-                let primary = ctx.clinic_ids[ctx.provider_clinic_assignments[prov_idx] % ctx.clinic_ids.len()];
+                let primary = ctx.clinic_ids
+                    [ctx.provider_clinic_assignments[prov_idx] % ctx.clinic_ids.len()];
                 let mut clinics = vec![primary];
                 // 30% chance of a second clinic (any random one)
                 if rng.random_bool(0.3) {
@@ -170,7 +185,7 @@ pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<()
                 let _result: (uuid::Uuid,) = sqlx::query_as(
                     "INSERT INTO vital_fold.clinic_schedule (clinic_id, provider_id, day_of_week, start_time, end_time) VALUES ($1, $2, $3, $4, $5) RETURNING schedule_id"
                 )
-                .bind(&clinic_id)
+                .bind(clinic_id)
                 .bind(provider_id)
                 .bind(day_of_week)
                 .bind(open_time)
@@ -183,10 +198,7 @@ pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<()
         }
     }
 
-    tracing::info!(
-        "Generated {} clinic schedules",
-        ctx.counts.clinic_schedules
-    );
+    tracing::info!("Generated {} clinic schedules", ctx.counts.clinic_schedules);
 
     Ok(())
 }

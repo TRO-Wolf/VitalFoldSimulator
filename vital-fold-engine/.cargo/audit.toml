@@ -1,0 +1,23 @@
+# cargo-audit configuration (auto-read when `cargo audit` runs from this crate).
+#
+# Every entry below is a deliberate, documented exception — NOT a blanket mute.
+# All cleanly-fixable advisories are kept fixed by updating the dependency
+# (see Cargo.lock); Dependabot opens PRs as upstream fixes land. Only advisories
+# that are unfixable or live in an unreachable transitive code path are ignored.
+[advisories]
+ignore = [
+    # rsa "Marvin" timing attack — NO FIXED VERSION EXISTS upstream.
+    # `rsa` enters the lockfile only through sqlx's compile-time macro crate for
+    # the MySQL driver, which this postgres-only service never instantiates
+    # (it is absent from the actual build graph: `cargo tree -i rsa` is empty).
+    "RUSTSEC-2023-0071",
+
+    # rustls-webpki 0.101.x certificate-validation issues. This OLD webpki copy
+    # is pulled only by the AWS SDK's bundled *legacy* hyper-rustls 0.24 /
+    # rustls 0.21 connector (via aws-smithy-http-client). The SDK's active HTTPS
+    # path uses aws-lc-rs (patched here to aws-lc-sys 0.41). These clear once the
+    # AWS SDK retires the legacy connector — tracked via Dependabot.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]

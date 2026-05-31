@@ -1,12 +1,12 @@
-/// Generate insurance companies and plans.
-///
-/// Insurance companies are fixed (7 companies from domain values).
-/// Insurance plans are dynamically generated based on SimulationConfig.
+//! Generate insurance companies and plans.
+//!
+//! Insurance companies are fixed (7 companies from domain values).
+//! Insurance plans are dynamically generated based on SimulationConfig.
 
 use crate::errors::AppError;
 use chrono::NaiveDate;
-use fake::Fake;
 use fake::faker::internet::en::SafeEmail;
+use fake::Fake;
 use rand::Rng;
 use sqlx::types::BigDecimal;
 
@@ -41,7 +41,9 @@ const INSURANCE_COMPANIES: &[&str] = &[
     "Caymana",
 ];
 
+/// ===========================================================================================
 /// Generate the 7 fixed insurance companies and insert them into the database.
+/// ===========================================================================================
 pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
 
@@ -49,7 +51,10 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
         let (phone, tax_id) = {
             use rand::rng;
             let mut rng = rng();
-            (gen_phone(&mut rng), rng.random_range(100_000_000..999_999_999))
+            (
+                gen_phone(&mut rng),
+                rng.random_range(100_000_000..999_999_999),
+            )
         };
         let email = SafeEmail().fake::<String>();
 
@@ -75,9 +80,11 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate insurance plans for each company and insert them into the database.
 ///
 /// Each company gets plans_per_company plans.
+/// ===========================================================================================
 pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
     let plans_per_company = ctx.config.plans_per_company;

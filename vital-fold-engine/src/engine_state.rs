@@ -302,9 +302,11 @@ mod tests {
     #[test]
     fn test_counts_updates() {
         let state = SimulatorState::new();
-        let mut counts = SimulationCounts::default();
-        counts.patients = 100;
-        counts.appointments = 50;
+        let counts = SimulationCounts {
+            patients: 100,
+            appointments: 50,
+            ..Default::default()
+        };
 
         state.set_counts(counts.clone());
         let retrieved = state.get_counts();

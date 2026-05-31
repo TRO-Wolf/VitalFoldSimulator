@@ -8,8 +8,10 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+/// ===========================================================================================
 /// Health check endpoint.
 /// Returns 200 OK with status "ok" to indicate the service is running.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/health",

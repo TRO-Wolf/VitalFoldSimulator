@@ -114,8 +114,6 @@ async fn generate_auth_token(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_pool_type_alias() {
         // Runtime test would require actual AWS configuration

@@ -5,6 +5,7 @@ use crate::models::{User, UserProfile};
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse};
 use uuid::Uuid;
 
+/// ===========================================================================================
 /// Get the current authenticated user's profile.
 ///
 /// This endpoint requires a valid JWT bearer token in the Authorization header.
@@ -14,6 +15,7 @@ use uuid::Uuid;
 /// * `401 Unauthorized` if no valid token provided
 /// * `404 Not Found` if user ID from token doesn't exist in database
 /// * `500 Internal Server Error` if database fails
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/api/v1/me",
@@ -28,10 +30,7 @@ use uuid::Uuid;
         (status = 500, description = "Internal server error", body = String)
     )
 )]
-pub async fn me(
-    req: HttpRequest,
-    pool: web::Data<DbPool>,
-) -> Result<HttpResponse, AppError> {
+pub async fn me(req: HttpRequest, pool: web::Data<DbPool>) -> Result<HttpResponse, AppError> {
     // Extract Claims from request extensions (inserted by jwt_validator middleware)
     let claims = req
         .extensions()

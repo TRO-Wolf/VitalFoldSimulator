@@ -1,10 +1,10 @@
-/// Generate patient_visit and patient_vitals rows in Aurora DSQL.
-///
-/// Called during Phase 1 (POST /populate) after appointments are generated.
-/// Each appointment gets one patient_visit row and one patient_vitals row.
-///
-/// Phase 2 (POST /simulate) later reads from these Aurora tables via JOIN
-/// and writes the data to DynamoDB.
+//! Generate patient_visit and patient_vitals rows in Aurora DSQL.
+//!
+//! Called during Phase 1 (POST /populate) after appointments are generated.
+//! Each appointment gets one patient_visit row and one patient_vitals row.
+//!
+//! Phase 2 (POST /simulate) later reads from these Aurora tables via JOIN
+//! and writes the data to DynamoDB.
 
 use crate::db::DbPool;
 use crate::errors::AppError;
@@ -54,17 +54,19 @@ struct AppointmentRow {
     appointment_datetime: NaiveDateTime,
 }
 
+/// ===========================================================================================
 /// Generate one patient_visit row and one patient_vitals row per appointment.
 ///
 /// Queries all appointments, generates visit + vitals data, and bulk-inserts into
 /// vital_fold.patient_visit (with RETURNING to capture UUIDs) then vital_fold.patient_vitals.
+/// ===========================================================================================
 pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::{rng, Rng};
 
     // Query all appointments from Aurora.
     let appointments: Vec<AppointmentRow> = sqlx::query_as(
         "SELECT appointment_id, patient_id, clinic_id, provider_id, appointment_datetime \
-         FROM vital_fold.appointment"
+         FROM vital_fold.appointment",
     )
     .fetch_all(&ctx.pool)
     .await?;
@@ -77,56 +79,70 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 
     // Build all visit + vital data synchronously — rng dropped before any await.
     let (
-        appointment_ids, patient_ids, clinic_ids, provider_ids,
-        checkin_times, checkout_times, provider_seen_times,
-        ekg_usages, copays, creation_times, expiry_epochs,
-        heights, weights, blood_pressures, heart_rates,
-        temperatures, oxygen_saturations,
+        appointment_ids,
+        patient_ids,
+        clinic_ids,
+        provider_ids,
+        checkin_times,
+        checkout_times,
+        provider_seen_times,
+        ekg_usages,
+        copays,
+        creation_times,
+        expiry_epochs,
+        heights,
+        weights,
+        blood_pressures,
+        heart_rates,
+        temperatures,
+        oxygen_saturations,
     ) = {
         let mut rng = rng();
         let now = Utc::now().naive_utc();
         let expiry = (Utc::now() + TimeDelta::days(90)).timestamp();
 
-        let mut appointment_ids:     Vec<Uuid>          = Vec::with_capacity(total);
-        let mut patient_ids:         Vec<Uuid>          = Vec::with_capacity(total);
-        let mut clinic_ids:          Vec<i64>           = Vec::with_capacity(total);
-        let mut provider_ids:        Vec<i64>           = Vec::with_capacity(total);
-        let mut checkin_times:       Vec<NaiveDateTime>  = Vec::with_capacity(total);
-        let mut checkout_times:      Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
+        let mut appointment_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut patient_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut clinic_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut provider_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut checkin_times: Vec<NaiveDateTime> = Vec::with_capacity(total);
+        let mut checkout_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
         let mut provider_seen_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
-        let mut ekg_usages:          Vec<bool>          = Vec::with_capacity(total);
-        let mut copays:              Vec<i32>           = Vec::with_capacity(total);
-        let mut creation_times:      Vec<NaiveDateTime>  = Vec::with_capacity(total);
-        let mut expiry_epochs:       Vec<i64>           = Vec::with_capacity(total);
-        let mut heights:             Vec<f64>           = Vec::with_capacity(total);
-        let mut weights:             Vec<f64>           = Vec::with_capacity(total);
-        let mut blood_pressures:     Vec<String>        = Vec::with_capacity(total);
-        let mut heart_rates:         Vec<i32>           = Vec::with_capacity(total);
-        let mut temperatures:        Vec<f64>           = Vec::with_capacity(total);
-        let mut oxygen_saturations:  Vec<f64>           = Vec::with_capacity(total);
+        let mut ekg_usages: Vec<bool> = Vec::with_capacity(total);
+        let mut copays: Vec<i32> = Vec::with_capacity(total);
+        let mut creation_times: Vec<NaiveDateTime> = Vec::with_capacity(total);
+        let mut expiry_epochs: Vec<i64> = Vec::with_capacity(total);
+        let mut heights: Vec<f64> = Vec::with_capacity(total);
+        let mut weights: Vec<f64> = Vec::with_capacity(total);
+        let mut blood_pressures: Vec<String> = Vec::with_capacity(total);
+        let mut heart_rates: Vec<i32> = Vec::with_capacity(total);
+        let mut temperatures: Vec<f64> = Vec::with_capacity(total);
+        let mut oxygen_saturations: Vec<f64> = Vec::with_capacity(total);
 
         for appt in &appointments {
             appointment_ids.push(appt.appointment_id);
             // Checkin: 5–15 min before scheduled appointment
-            let early_arrival        = rng.random_range(5..=15i64);
+            let early_arrival = rng.random_range(5..=15i64);
             // Provider seen: weekday-aware (steady 0–5 most days; fat tail on Mon/Tue)
-            let provider_seen_offset = provider_seen_offset_minutes(&mut rng, appt.appointment_datetime);
+            let provider_seen_offset =
+                provider_seen_offset_minutes(&mut rng, appt.appointment_datetime);
             // Checkout: 15–30 min after the patient is seen (so a long wait
             // also delays checkout — never produces checkout-before-seen).
-            let checkout_offset      = rng.random_range(15..=30i64);
+            let checkout_offset = rng.random_range(15..=30i64);
 
             patient_ids.push(appt.patient_id);
             clinic_ids.push(appt.clinic_id);
             provider_ids.push(appt.provider_id);
             checkin_times.push(appt.appointment_datetime - TimeDelta::minutes(early_arrival));
-            let provider_seen = appt.appointment_datetime + TimeDelta::minutes(provider_seen_offset);
+            let provider_seen =
+                appt.appointment_datetime + TimeDelta::minutes(provider_seen_offset);
             provider_seen_times.push(Some(provider_seen));
             checkout_times.push(Some(provider_seen + TimeDelta::minutes(checkout_offset)));
             let ekg = rng.random_bool(0.2);
             let copay = if ekg {
                 rng.random_range(150..350) // EKG visit: higher copay
             } else {
-                rng.random_range(20..150)  // Standard visit
+                rng.random_range(20..150) // Standard visit
             };
             ekg_usages.push(ekg);
             copays.push(copay);
@@ -145,11 +161,23 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
         }
 
         (
-            appointment_ids, patient_ids, clinic_ids, provider_ids,
-            checkin_times, checkout_times, provider_seen_times,
-            ekg_usages, copays, creation_times, expiry_epochs,
-            heights, weights, blood_pressures, heart_rates,
-            temperatures, oxygen_saturations,
+            appointment_ids,
+            patient_ids,
+            clinic_ids,
+            provider_ids,
+            checkin_times,
+            checkout_times,
+            provider_seen_times,
+            ekg_usages,
+            copays,
+            creation_times,
+            expiry_epochs,
+            heights,
+            weights,
+            blood_pressures,
+            heart_rates,
+            temperatures,
+            oxygen_saturations,
         )
     }; // rng dropped here
 
@@ -222,17 +250,20 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
 
     tracing::info!(
         "Generated {} patient_visit + {} patient_vitals rows",
-        ctx.counts.patient_visits, ctx.counts.patient_vitals
+        ctx.counts.patient_visits,
+        ctx.counts.patient_vitals
     );
 
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate patient_visit + patient_vitals for a set of appointments (standalone).
 /// Used by `run_date_range_simulate` and `run_populate_dynamic`.
 /// Returns (visit_ids, ekg_flags, vitals_count). `ekg_flags[i]` aligns 1:1
 /// with `appointments[i]` so the downstream RVU generator can bill CPT 93000
 /// for visits where the EKG was performed.
+/// ===========================================================================================
 pub async fn generate_visits_for_appointments(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],
@@ -240,41 +271,55 @@ pub async fn generate_visits_for_appointments(
     use rand::{rng, Rng};
 
     let total = appointments.len();
-    if total == 0 { return Ok((Vec::new(), Vec::new(), 0)); }
+    if total == 0 {
+        return Ok((Vec::new(), Vec::new(), 0));
+    }
 
     let (
-        appointment_ids, patient_ids, clinic_ids, provider_ids,
-        checkin_times, checkout_times, provider_seen_times,
-        ekg_usages, copays, creation_times, expiry_epochs,
-        heights, weights, blood_pressures, heart_rates,
-        temperatures, oxygen_saturations,
+        appointment_ids,
+        patient_ids,
+        clinic_ids,
+        provider_ids,
+        checkin_times,
+        checkout_times,
+        provider_seen_times,
+        ekg_usages,
+        copays,
+        creation_times,
+        expiry_epochs,
+        heights,
+        weights,
+        blood_pressures,
+        heart_rates,
+        temperatures,
+        oxygen_saturations,
     ) = {
         let mut rng = rng();
         let now = Utc::now().naive_utc();
         let expiry = (Utc::now() + TimeDelta::days(90)).timestamp();
 
-        let mut appointment_ids:     Vec<Uuid>                 = Vec::with_capacity(total);
-        let mut patient_ids:         Vec<Uuid>                 = Vec::with_capacity(total);
-        let mut clinic_ids:          Vec<i64>                  = Vec::with_capacity(total);
-        let mut provider_ids:        Vec<i64>                  = Vec::with_capacity(total);
-        let mut checkin_times:       Vec<NaiveDateTime>         = Vec::with_capacity(total);
-        let mut checkout_times:      Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
+        let mut appointment_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut patient_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut clinic_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut provider_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut checkin_times: Vec<NaiveDateTime> = Vec::with_capacity(total);
+        let mut checkout_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
         let mut provider_seen_times: Vec<Option<NaiveDateTime>> = Vec::with_capacity(total);
-        let mut ekg_usages:          Vec<bool>                 = Vec::with_capacity(total);
-        let mut copays:              Vec<i32>                  = Vec::with_capacity(total);
-        let mut creation_times:      Vec<NaiveDateTime>         = Vec::with_capacity(total);
-        let mut expiry_epochs:       Vec<i64>                  = Vec::with_capacity(total);
-        let mut heights:             Vec<Option<f64>>          = Vec::with_capacity(total);
-        let mut weights:             Vec<Option<f64>>          = Vec::with_capacity(total);
-        let mut blood_pressures:     Vec<String>               = Vec::with_capacity(total);
-        let mut heart_rates:         Vec<i32>                  = Vec::with_capacity(total);
-        let mut temperatures:        Vec<f64>                  = Vec::with_capacity(total);
-        let mut oxygen_saturations:  Vec<Option<f64>>          = Vec::with_capacity(total);
+        let mut ekg_usages: Vec<bool> = Vec::with_capacity(total);
+        let mut copays: Vec<i32> = Vec::with_capacity(total);
+        let mut creation_times: Vec<NaiveDateTime> = Vec::with_capacity(total);
+        let mut expiry_epochs: Vec<i64> = Vec::with_capacity(total);
+        let mut heights: Vec<Option<f64>> = Vec::with_capacity(total);
+        let mut weights: Vec<Option<f64>> = Vec::with_capacity(total);
+        let mut blood_pressures: Vec<String> = Vec::with_capacity(total);
+        let mut heart_rates: Vec<i32> = Vec::with_capacity(total);
+        let mut temperatures: Vec<f64> = Vec::with_capacity(total);
+        let mut oxygen_saturations: Vec<Option<f64>> = Vec::with_capacity(total);
 
         // Data quality error rates (realistic for outpatient cardiology).
-        const LATE_ARRIVAL_RATE: f64 = 0.02;    // 2% of patients arrive after scheduled time
-        const NULL_VITALS_RATE: f64 = 0.03;     // 3% of visits have 1+ missing vitals
-        const OUTLIER_VITALS_RATE: f64 = 0.02;  // 2% of visits have clinically extreme values
+        const LATE_ARRIVAL_RATE: f64 = 0.02; // 2% of patients arrive after scheduled time
+        const NULL_VITALS_RATE: f64 = 0.03; // 3% of visits have 1+ missing vitals
+        const OUTLIER_VITALS_RATE: f64 = 0.02; // 2% of visits have clinically extreme values
 
         // appointments tuple: (appt_id, patient_id, clinic_id, provider_id, appt_dt)
         for &(appt_id, patient_id, clinic_id, provider_id, appt_dt) in appointments {
@@ -300,13 +345,15 @@ pub async fn generate_visits_for_appointments(
             clinic_ids.push(clinic_id);
             provider_ids.push(provider_id);
             checkin_times.push(checkin);
-            checkout_times.push(Some(seen_base + TimeDelta::minutes(provider_seen_offset + checkout_offset)));
+            checkout_times.push(Some(
+                seen_base + TimeDelta::minutes(provider_seen_offset + checkout_offset),
+            ));
             provider_seen_times.push(Some(seen_base + TimeDelta::minutes(provider_seen_offset)));
             let ekg = rng.random_bool(0.2);
             let copay = if ekg {
                 rng.random_range(150..350) // EKG visit: higher copay
             } else {
-                rng.random_range(20..150)  // Standard visit
+                rng.random_range(20..150) // Standard visit
             };
             ekg_usages.push(ekg);
             copays.push(copay);
@@ -321,26 +368,54 @@ pub async fn generate_visits_for_appointments(
                 // Null out 1-2 of the nullable vitals (height, weight, O2 sat).
                 // Blood pressure, heart rate, and temperature are always recorded.
                 let null_choice = rng.random_range(0..3u32);
-                heights.push(if null_choice == 0 || null_choice == 2 { None } else { Some(rng.random_range(60.0..78.0f64)) });
-                weights.push(if null_choice == 1 || null_choice == 2 { None } else { Some(rng.random_range(120.0..220.0f64)) });
+                heights.push(if null_choice == 0 || null_choice == 2 {
+                    None
+                } else {
+                    Some(rng.random_range(60.0..78.0f64))
+                });
+                weights.push(if null_choice == 1 || null_choice == 2 {
+                    None
+                } else {
+                    Some(rng.random_range(120.0..220.0f64))
+                });
                 let sys = rng.random_range(100..160u32);
                 let dia = rng.random_range(60..100u32);
                 blood_pressures.push(format!("{}/{}", sys, dia));
                 heart_rates.push(rng.random_range(50..120i32));
                 temperatures.push(97.0 + (rng.random::<f64>() * 2.5));
-                oxygen_saturations.push(if null_choice >= 1 { None } else { Some(rng.random_range(95.0..100.0f64)) });
+                oxygen_saturations.push(if null_choice >= 1 {
+                    None
+                } else {
+                    Some(rng.random_range(95.0..100.0f64))
+                });
             } else if has_outlier_vitals {
                 // Clinically extreme values: fever, hypertensive crisis, brady/tachycardia, hypoxemia
                 heights.push(Some(rng.random_range(60.0..78.0f64)));
                 weights.push(Some(rng.random_range(120.0..220.0f64)));
                 // Hypertensive crisis or hypotension
-                let sys = if rng.random_bool(0.7) { rng.random_range(180..220u32) } else { rng.random_range(70..90u32) };
-                let dia = if sys > 160 { rng.random_range(100..130u32) } else { rng.random_range(40..55u32) };
+                let sys = if rng.random_bool(0.7) {
+                    rng.random_range(180..220u32)
+                } else {
+                    rng.random_range(70..90u32)
+                };
+                let dia = if sys > 160 {
+                    rng.random_range(100..130u32)
+                } else {
+                    rng.random_range(40..55u32)
+                };
                 blood_pressures.push(format!("{}/{}", sys, dia));
                 // Severe brady or tachycardia
-                heart_rates.push(if rng.random_bool(0.5) { rng.random_range(30..45i32) } else { rng.random_range(130..180i32) });
+                heart_rates.push(if rng.random_bool(0.5) {
+                    rng.random_range(30..45i32)
+                } else {
+                    rng.random_range(130..180i32)
+                });
                 // Fever, hypothermia, or normal
-                temperatures.push(if rng.random_bool(0.6) { rng.random_range(100.5..104.0f64) } else { rng.random_range(94.0..96.5f64) });
+                temperatures.push(if rng.random_bool(0.6) {
+                    rng.random_range(100.5..104.0f64)
+                } else {
+                    rng.random_range(94.0..96.5f64)
+                });
                 // Hypoxemia
                 oxygen_saturations.push(Some(rng.random_range(70.0..94.0f64)));
             } else {
@@ -357,11 +432,23 @@ pub async fn generate_visits_for_appointments(
         }
 
         (
-            appointment_ids, patient_ids, clinic_ids, provider_ids,
-            checkin_times, checkout_times, provider_seen_times,
-            ekg_usages, copays, creation_times, expiry_epochs,
-            heights, weights, blood_pressures, heart_rates,
-            temperatures, oxygen_saturations,
+            appointment_ids,
+            patient_ids,
+            clinic_ids,
+            provider_ids,
+            checkin_times,
+            checkout_times,
+            provider_seen_times,
+            ekg_usages,
+            copays,
+            creation_times,
+            expiry_epochs,
+            heights,
+            weights,
+            blood_pressures,
+            heart_rates,
+            temperatures,
+            oxygen_saturations,
         )
     };
 
@@ -435,7 +522,8 @@ pub async fn generate_visits_for_appointments(
 
     tracing::info!(
         "Generated {} patient_visit + {} patient_vitals rows for date range",
-        visit_ids.len(), vitals_count
+        visit_ids.len(),
+        vitals_count
     );
     Ok((visit_ids, ekg_usages, vitals_count))
 }
@@ -488,7 +576,10 @@ mod tests {
             .max()
             .expect("non-empty iterator");
 
-        assert!(max <= 5, "expected Wed offsets capped at 5 min, saw {}", max);
+        assert!(
+            max <= 5,
+            "expected Wed offsets capped at 5 min, saw {}",
+            max
+        );
     }
 }
-

@@ -124,12 +124,13 @@ cd vital-fold-engine
 
 cargo build --release
 cargo run --release        # listens on 0.0.0.0:8787 by default
-cargo test --all-targets   # 22 unit tests (mostly middleware::auth)
-cargo clippy --all-targets
-cargo fmt
+cargo test --all-targets   # 24 unit tests (mostly middleware::auth)
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings   # warnings are errors
+cargo audit                # RustSec advisory scan (cargo install cargo-audit)
 ```
 
-CI runs `cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check` on every push and PR (see [.github/workflows/](.github/workflows/)). Keep it green.
+CI (see [.github/workflows/ci.yml](.github/workflows/ci.yml)) runs two jobs on every push and PR — **test** (`cargo fmt --check` → `cargo clippy -D warnings` → `cargo check` → `cargo test`) and **audit** (`cargo audit`). Clippy is gated strictly (`-D warnings`); the crate also sets `[lints] unsafe_code = "forbid"` in [vital-fold-engine/Cargo.toml](vital-fold-engine/Cargo.toml). `cargo audit` ignores `RUSTSEC-2023-0071` (rsa, via the unused sqlx MySQL driver — postgres-only, no fix exists). Keep it green.
 
 ---
 
@@ -283,9 +284,9 @@ Before you call a task "done":
 
 1. `cargo check` — zero errors, zero warnings
 2. `cargo test --all-targets` — everything green (currently 24 tests)
-3. `cargo clippy --all-targets` — clean
-4. `cargo fmt` — applied
-5. No new `.unwrap()` or `.expect()` introduced (§7.1)
+3. `cargo clippy --all-targets --all-features -- -D warnings` — clean (CI gates on this)
+4. `cargo fmt --check` — clean
+5. No new `.unwrap()` or `.expect()` introduced (§7.1); no `unsafe` (forbidden crate-wide)
 6. If you changed behavior visible to users, update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`
 7. If you changed schema, API, models, or architecture, update the corresponding doc in the same commit
 8. If you changed row counts, status shapes, or JSON responses, update [vital-fold-engine/API.md](vital-fold-engine/API.md) examples
