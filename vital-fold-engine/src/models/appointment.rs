@@ -15,9 +15,8 @@ pub struct Appointment {
     pub status: String,
 }
 
-
 struct Transaction {
     id: u32,
     reference_date: NaiveDateTime,
-    note: String
+    note: String,
 }

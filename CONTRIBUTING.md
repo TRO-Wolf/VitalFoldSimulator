@@ -28,20 +28,32 @@ cd vital-fold-engine
 cargo test --all-targets
 ```
 
-CI runs `cargo check`, `cargo test`, and `cargo clippy` on every PR — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+CI runs two jobs on every PR (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+- **test** — `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings` (warnings are hard errors), `cargo check`, `cargo test`.
+- **audit** — `cargo audit` against the RustSec advisory database.
+
+Run the linter/format gates locally before pushing:
+
+```bash
+cd vital-fold-engine
+cargo fmt
+cargo clippy --all-targets --all-features -- -D warnings
+```
 
 ## Pull request expectations
 
 - **Branch from `main`**, name it something descriptive (`feat/...`, `fix/...`, `docs/...`, `chore/...`).
 - **Keep commits focused.** One logical change per commit; squash fixups before opening the PR.
 - **Describe the why, not just the what.** The PR body should explain motivation, not duplicate the diff.
-- **CI must be green.** `cargo check` + `cargo test` + `cargo clippy` all pass on `ubuntu-latest`.
+- **CI must be green.** `cargo fmt --check` + `cargo clippy -D warnings` + `cargo check` + `cargo test` + `cargo audit` all pass on `ubuntu-latest`.
 - **Update the docs in the same PR** when you change the schema, an endpoint, or a generator step. The [`CHANGELOG.md`](CHANGELOG.md) `[Unreleased]` section is the right place for a short entry.
 - **Never commit secrets.** `.env`, AWS keys, and JWT secrets are in `.gitignore` for a reason — don't override it.
 
 ## Code style
 
-- Rust 2021 edition. Run `cargo fmt` before committing.
+- Rust 2021 edition. Run `cargo fmt` before committing (CI gates on `cargo fmt --check`).
+- `unsafe` code is **forbidden** crate-wide (`[lints] unsafe_code = "forbid"` in `Cargo.toml`). Clippy `all` runs at warn locally and is denied in CI.
 - Never use bare `.unwrap()` or `.expect()` — prefer `?`, `.ok_or_else()`, or `.unwrap_or_else()` with a safe fallback. This is enforced in review.
 - Generators that use `rand::rng()` must drop the RNG before any `.await` (it's `!Send`). See existing generators in `src/generators/` for the pattern.
 - Bulk inserts use `UNNEST` with a 2500-row batch cap to stay within Aurora DSQL's per-statement row limit.

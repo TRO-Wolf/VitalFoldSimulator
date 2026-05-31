@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Rust crate dependencies (the crate lives in a subdirectory).
+  - package-ecosystem: cargo
+    directory: /vital-fold-engine
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # GitHub Actions used by the workflows (keeps the SHA pins fresh).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

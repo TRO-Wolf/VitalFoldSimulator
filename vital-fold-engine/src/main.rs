@@ -1,7 +1,7 @@
-/// VitalFold Engine — Synthetic Health Data Simulator
-///
-/// A production-grade REST API for generating and managing synthetic health clinic data
-/// using Aurora DSQL and DynamoDB. Includes JWT-based authentication and simulation control.
+//! VitalFold Engine — Synthetic Health Data Simulator
+//!
+//! A production-grade REST API for generating and managing synthetic health clinic data
+//! using Aurora DSQL and DynamoDB. Includes JWT-based authentication and simulation control.
 
 mod config;
 mod db;
@@ -19,15 +19,20 @@ mod routes;
 
 use actix_web::{web, App, HttpServer};
 use engine_state::SimulatorState;
+use engine_state::{
+    ClinicActivity, PopulateProgress, ResetProgress, SimulationCounts, TimelapseState,
+};
+use handlers::auth::AdminLoginRequest;
+use handlers::simulation::{
+    ClinicVisitors, DateRangeRequest, DynamicPopulateRequest, PopulateRequest,
+    StaticPopulateRequest, TimelapseRequest, VisitorEntry, VisitorsResponse,
+};
+use handlers::{auth, health, simulation, user};
+use models::{AuthResponse, LoginRequest, MessageResponse, SimulationStatusResponse, UserProfile};
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-use handlers::{health, auth, user, simulation};
-use handlers::simulation::{PopulateRequest, StaticPopulateRequest, DynamicPopulateRequest, TimelapseRequest, DateRangeRequest, VisitorsResponse, ClinicVisitors, VisitorEntry};
-use models::{LoginRequest, AuthResponse, UserProfile, MessageResponse, SimulationStatusResponse};
-use handlers::auth::AdminLoginRequest;
-use engine_state::{SimulationCounts, ClinicActivity, TimelapseState, ResetProgress, PopulateProgress};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -108,8 +113,8 @@ impl utoipa::Modify for SecurityAddon {
                         .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
                         .bearer_format("JWT")
                         .description(Some("Enter your JWT token"))
-                        .build()
-                )
+                        .build(),
+                ),
             )
         }
     }
@@ -121,7 +126,11 @@ async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("vital_fold_engine=info".parse().expect("valid tracing directive"))
+                .add_directive(
+                    "vital_fold_engine=info"
+                        .parse()
+                        .expect("valid tracing directive"),
+                )
                 .add_directive("actix_web=info".parse().expect("valid tracing directive")),
         )
         .init();
@@ -129,8 +138,7 @@ async fn main() -> std::io::Result<()> {
     tracing::info!("Starting VitalFold Engine");
 
     // Load configuration from environment
-    let config = config::Config::from_env()
-        .expect("Failed to load configuration from environment");
+    let config = config::Config::from_env().expect("Failed to load configuration from environment");
 
     tracing::info!(
         "Configuration loaded: host={}, port={}, endpoint={}",
@@ -154,7 +162,9 @@ async fn main() -> std::io::Result<()> {
 
     // Create DynamoDB client
     let aws_cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_sdk_dynamodb::config::Region::new(config.dsql_region.clone()))
+        .region(aws_sdk_dynamodb::config::Region::new(
+            config.dsql_region.clone(),
+        ))
         .load()
         .await;
     let dynamo_client = aws_sdk_dynamodb::Client::new(&aws_cfg);
@@ -173,16 +183,15 @@ async fn main() -> std::io::Result<()> {
             simulator_state.set_counts(counts);
         }
         Err(e) => {
-            tracing::warn!("Could not hydrate state from DB (empty or unreachable): {}", e);
+            tracing::warn!(
+                "Could not hydrate state from DB (empty or unreachable): {}",
+                e
+            );
         }
     }
 
     // Print startup banner
-    tracing::info!(
-        "Starting HTTP server on {}:{}",
-        config.host,
-        config.port
-    );
+    tracing::info!("Starting HTTP server on {}:{}", config.host, config.port);
 
     // Clone config for use after move into closure
     let host = config.host.clone();
@@ -199,15 +208,14 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         // Return a descriptive 400 on JSON parse failures instead of silently
         // falling through to Option::None in handlers.
-        let json_cfg = web::JsonConfig::default()
-            .error_handler(|err, _req| {
-                let msg = format!("JSON parse error: {}", err);
-                actix_web::error::InternalError::from_response(
-                    err,
-                    actix_web::HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
-                )
-                .into()
-            });
+        let json_cfg = web::JsonConfig::default().error_handler(|err, _req| {
+            let msg = format!("JSON parse error: {}", err);
+            actix_web::error::InternalError::from_response(
+                err,
+                actix_web::HttpResponse::BadRequest().json(serde_json::json!({ "error": msg })),
+            )
+            .into()
+        });
 
         App::new()
             // Logging middleware
@@ -221,7 +229,7 @@ async fn main() -> std::io::Result<()> {
             // Swagger UI
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
-                    .url("/api-docs/openapi.json", ApiDoc::openapi())
+                    .url("/api-docs/openapi.json", ApiDoc::openapi()),
             )
             // Routes
             .configure(routes::configure)

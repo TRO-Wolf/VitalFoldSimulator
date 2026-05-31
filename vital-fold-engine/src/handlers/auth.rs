@@ -59,11 +59,10 @@ pub async fn login(
     })?;
 
     // Verify password
-    let password_valid = verify(&req.password, &user.password_hash)
-        .map_err(|e| {
-            tracing::error!("Password verification error: {}", e);
-            AppError::Internal("Password verification failed".to_string())
-        })?;
+    let password_valid = verify(&req.password, &user.password_hash).map_err(|e| {
+        tracing::error!("Password verification error: {}", e);
+        AppError::Internal("Password verification failed".to_string())
+    })?;
 
     if !password_valid {
         tracing::warn!("Failed login attempt for user: {}", user.id);
@@ -164,8 +163,6 @@ pub async fn admin_login(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_email_normalization() {
         let email = "  User@Example.COM  ";

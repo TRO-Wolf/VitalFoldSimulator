@@ -1,16 +1,16 @@
-/// Generate appointments for patients at clinics (Aurora DSQL only).
-///
-/// Each patient gets N appointments distributed across random clinics and providers.
-/// Appointments are bulk-inserted in chunks of DSQL_BATCH_SIZE to stay under Aurora
-/// DSQL's 3000-row per-transaction limit.
-///
-/// DynamoDB writes are NOT performed here. They are performed by `run_simulate` in mod.rs,
-/// which queries today's visits via a JOIN on patient_visit + patient_vitals and writes
-/// to both DynamoDB tables.
+//! Generate appointments for patients at clinics (Aurora DSQL only).
+//!
+//! Each patient gets N appointments distributed across random clinics and providers.
+//! Appointments are bulk-inserted in chunks of DSQL_BATCH_SIZE to stay under Aurora
+//! DSQL's 3000-row per-transaction limit.
+//!
+//! DynamoDB writes are NOT performed here. They are performed by `run_simulate` in mod.rs,
+//! which queries today's visits via a JOIN on patient_visit + patient_vitals and writes
+//! to both DynamoDB tables.
 
 use crate::db::DbPool;
 use crate::errors::AppError;
-use chrono::{NaiveDate, TimeDelta, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 use uuid::Uuid;
 
 /// Max retries for DynamoDB throttling (exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms).
@@ -31,7 +31,8 @@ fn distribute_by_weight(total: usize, weights: &[u32], weight_sum: u32) -> Vec<u
     if weight_sum == 0 || weights.is_empty() {
         return vec![0; weights.len()];
     }
-    let mut result: Vec<usize> = weights.iter()
+    let mut result: Vec<usize> = weights
+        .iter()
         .map(|&w| ((total as u64 * w as u64) / weight_sum as u64) as usize)
         .collect();
     let assigned: usize = result.iter().sum();
@@ -39,7 +40,9 @@ fn distribute_by_weight(total: usize, weights: &[u32], weight_sum: u32) -> Vec<u
 
     // Distribute leftover 1-by-1 to the buckets with the largest fractional part.
     if remainder > 0 {
-        let mut fractionals: Vec<(usize, f64)> = weights.iter().enumerate()
+        let mut fractionals: Vec<(usize, f64)> = weights
+            .iter()
+            .enumerate()
             .map(|(i, &w)| {
                 let exact = total as f64 * w as f64 / weight_sum as f64;
                 (i, exact - result[i] as f64)
@@ -47,7 +50,9 @@ fn distribute_by_weight(total: usize, weights: &[u32], weight_sum: u32) -> Vec<u
             .collect();
         fractionals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         for (idx, _) in fractionals {
-            if remainder == 0 { break; }
+            if remainder == 0 {
+                break;
+            }
             result[idx] += 1;
             remainder -= 1;
         }
@@ -74,8 +79,10 @@ fn roll_status(roll: f64) -> &'static str {
     }
 }
 
+/// ===========================================================================================
 /// Pre-build a lookup: clinic_index → Vec<patient_ids> for patients assigned to that metro.
 /// Used to bias patient selection toward the clinic's geographic area.
+/// ===========================================================================================
 fn build_clinic_patient_map(
     patient_ids: &[Uuid],
     patient_home_clinics: &[usize],
@@ -95,14 +102,16 @@ const APPOINTMENT_REASONS: &[&str] = &[
     "New patient visit",
 ];
 
+/// ===========================================================================================
 /// Generate appointments by filling every provider's schedule.
 ///
 /// Each provider gets 36 appointments per day (one per 15-minute slot from 8:00–16:45)
 /// at their assigned clinic. Patients are drawn randomly (biased 70% toward home clinic).
 /// Appointments span `config.start_date .. config.end_date` (both inclusive).
+/// ===========================================================================================
 pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::{rng, Rng};
     use super::SLOTS_PER_PROVIDER;
+    use rand::{rng, Rng};
 
     let span = (ctx.config.end_date - ctx.config.start_date).num_days() + 1;
     let num_providers = ctx.provider_ids.len();
@@ -112,17 +121,14 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
     let clinic_patients = build_clinic_patient_map(&ctx.patient_ids, &ctx.patient_home_clinics);
 
     // Build all appointment data synchronously — rng dropped before any await.
-    let (
-        pt_ids, provider_ids, clinic_ids,
-        appt_dts, reasons,
-    ) = {
+    let (pt_ids, provider_ids, clinic_ids, appt_dts, reasons) = {
         let mut rng = rng();
 
-        let mut pt_ids:       Vec<Uuid>            = Vec::with_capacity(total);
-        let mut provider_ids: Vec<i64>             = Vec::with_capacity(total);
-        let mut clinic_ids:   Vec<i64>             = Vec::with_capacity(total);
-        let mut appt_dts:     Vec<NaiveDateTime>   = Vec::with_capacity(total);
-        let mut reasons:      Vec<String>          = Vec::with_capacity(total);
+        let mut pt_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut provider_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut clinic_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut appt_dts: Vec<NaiveDateTime> = Vec::with_capacity(total);
+        let mut reasons: Vec<String> = Vec::with_capacity(total);
 
         for day_offset in 0..span {
             let date = ctx.config.start_date + TimeDelta::days(day_offset);
@@ -142,19 +148,22 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
                         let minute = quarter * 15;
                         // 70% local patient from same metro, 30% any patient
                         let patient_id = if rng.random_bool(0.7) {
-                            clinic_patients.get(&clinic_idx)
+                            clinic_patients
+                                .get(&clinic_idx)
                                 .filter(|pts| !pts.is_empty())
                                 .map(|pts| pts[rng.random_range(0..pts.len())])
-                                .unwrap_or_else(|| ctx.patient_ids[rng.random_range(0..ctx.patient_ids.len())])
+                                .unwrap_or_else(|| {
+                                    ctx.patient_ids[rng.random_range(0..ctx.patient_ids.len())]
+                                })
                         } else {
                             ctx.patient_ids[rng.random_range(0..ctx.patient_ids.len())]
                         };
-                        let reason = APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
+                        let reason =
+                            APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
 
                         let appt_dt = NaiveDateTime::new(
                             date,
-                            chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                                .unwrap_or_default(),
+                            chrono::NaiveTime::from_hms_opt(hour, minute, 0).unwrap_or_default(),
                         );
 
                         pt_ids.push(patient_id);
@@ -198,6 +207,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate appointments for a date range by filling every provider's schedule.
 ///
 /// Each provider gets 36 appointments per day (one per 15-minute slot from 8:00–16:45)
@@ -207,6 +217,7 @@ pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), Ap
 /// Uses `INSERT ... RETURNING` to capture generated IDs and status for downstream filtering.
 /// The 6th tuple element is the status string — the caller filters to "completed" before
 /// passing to visit/medical-record/RVU generators.
+/// ===========================================================================================
 pub async fn generate_appointments_by_day(
     pool: &DbPool,
     patient_ids: &[Uuid],
@@ -224,7 +235,8 @@ pub async fn generate_appointments_by_day(
 
     // Distribute providers across clinics proportionally by weight.
     let weight_sum: u32 = clinic_weights.iter().sum();
-    let providers_per_clinic: Vec<usize> = distribute_by_weight(provider_ids.len(), clinic_weights, weight_sum);
+    let providers_per_clinic: Vec<usize> =
+        distribute_by_weight(provider_ids.len(), clinic_weights, weight_sum);
 
     // Build a flat list of (provider_id, clinic_id) assignments.
     let mut provider_assignments: Vec<(i64, i64)> = Vec::with_capacity(provider_ids.len());
@@ -240,18 +252,19 @@ pub async fn generate_appointments_by_day(
     }
 
     let total = provider_assignments.len() * SLOTS_PER_PROVIDER * span as usize;
-    let mut all_results: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)> = Vec::with_capacity(total);
+    let mut all_results: Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)> =
+        Vec::with_capacity(total);
 
     // Build all appointment data synchronously — rng dropped before any await.
     let (pt_ids, prov_ids, cl_ids, appt_dts, reasons, statuses) = {
         let mut rng = rng();
 
-        let mut pt_ids:   Vec<Uuid>          = Vec::with_capacity(total);
-        let mut prov_ids: Vec<i64>           = Vec::with_capacity(total);
-        let mut cl_ids:   Vec<i64>           = Vec::with_capacity(total);
+        let mut pt_ids: Vec<Uuid> = Vec::with_capacity(total);
+        let mut prov_ids: Vec<i64> = Vec::with_capacity(total);
+        let mut cl_ids: Vec<i64> = Vec::with_capacity(total);
         let mut appt_dts: Vec<NaiveDateTime> = Vec::with_capacity(total);
-        let mut reasons:  Vec<String>        = Vec::with_capacity(total);
-        let mut statuses: Vec<String>        = Vec::with_capacity(total);
+        let mut reasons: Vec<String> = Vec::with_capacity(total);
+        let mut statuses: Vec<String> = Vec::with_capacity(total);
 
         for day_offset in 0..span {
             let date = start_date + TimeDelta::days(day_offset);
@@ -261,14 +274,15 @@ pub async fn generate_appointments_by_day(
                     for quarter in 0u32..4u32 {
                         let minute = quarter * 15;
                         let patient_id = patient_ids[rng.random_range(0..patient_ids.len())];
-                        let reason = APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
+                        let reason =
+                            APPOINTMENT_REASONS[rng.random_range(0..APPOINTMENT_REASONS.len())];
                         let status = roll_status(rng.random::<f64>());
 
                         let appt_dt = NaiveDateTime::new(
                             date,
-                            chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-                                .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(8, 0, 0)
-                                    .unwrap_or_default()),
+                            chrono::NaiveTime::from_hms_opt(hour, minute, 0).unwrap_or_else(|| {
+                                chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default()
+                            }),
                         );
 
                         pt_ids.push(patient_id);
@@ -316,28 +330,42 @@ pub async fn generate_appointments_by_day(
     tracing::info!(
         "Generated {} appointments ({} completed, {} no-show, {} cancelled) \
          — {} providers × 36 slots × {} days for {} to {}",
-        total_count, completed, no_shows, cancelled,
-        provider_assignments.len(), days, start_date, end_date
+        total_count,
+        completed,
+        no_shows,
+        cancelled,
+        provider_assignments.len(),
+        days,
+        start_date,
+        end_date
     );
 
     Ok(all_results)
 }
 
+/// ===========================================================================================
 /// Write visit metadata to DynamoDB patient_visit table.
 /// Called by `run_simulate` in mod.rs for visits whose checkin_time matches today.
 ///
 /// Sort key is "clinic_id#visit_id" to ensure uniqueness per dynamo.json schema.
 /// Retries up to `DYNAMO_MAX_RETRIES` times on throttling errors with exponential
 /// backoff + jitter. Returns `true` on success, `false` on permanent error.
+/// ==========================================================================================
 pub(super) async fn write_patient_visit(
     dynamo: &aws_sdk_dynamodb::Client,
     visit: &crate::models::PatientVisitWithVitals,
 ) -> bool {
     use aws_sdk_dynamodb::types::AttributeValue;
 
-    let checkin_time  = visit.checkin_time.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let checkout_time = visit.checkout_time.map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default();
-    let provider_seen = visit.provider_seen_time.map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default();
+    let checkin_time = visit.checkin_time.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let checkout_time = visit
+        .checkout_time
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
+    let provider_seen = visit
+        .provider_seen_time
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
 
     let sort_key = format!("{}#{}", visit.clinic_id, visit.patient_visit_id);
 
@@ -345,16 +373,34 @@ pub(super) async fn write_patient_visit(
         let result = dynamo
             .put_item()
             .table_name("patient_visit")
-            .item("patient_id",              AttributeValue::S(visit.patient_id.to_string()))
-            .item("clinic_id",               AttributeValue::S(sort_key.clone()))
-            .item("provider_id",             AttributeValue::S(visit.provider_id.to_string()))
-            .item("checkin_time",            AttributeValue::S(checkin_time.clone()))
-            .item("checkout_time",           AttributeValue::S(checkout_time.clone()))
-            .item("provider_seen_time",      AttributeValue::S(provider_seen.clone()))
-            .item("ekg_usage",               AttributeValue::Bool(visit.ekg_usage))
-            .item("estimated_copay",         AttributeValue::N(visit.estimated_copay.to_string()))
-            .item("creation_time",           AttributeValue::N(visit.creation_time.and_utc().timestamp().to_string()))
-            .item("record_expiration_epoch", AttributeValue::N(visit.record_expiration_epoch.to_string()))
+            .item(
+                "patient_id",
+                AttributeValue::S(visit.patient_id.to_string()),
+            )
+            .item("clinic_id", AttributeValue::S(sort_key.clone()))
+            .item(
+                "provider_id",
+                AttributeValue::S(visit.provider_id.to_string()),
+            )
+            .item("checkin_time", AttributeValue::S(checkin_time.clone()))
+            .item("checkout_time", AttributeValue::S(checkout_time.clone()))
+            .item(
+                "provider_seen_time",
+                AttributeValue::S(provider_seen.clone()),
+            )
+            .item("ekg_usage", AttributeValue::Bool(visit.ekg_usage))
+            .item(
+                "estimated_copay",
+                AttributeValue::N(visit.estimated_copay.to_string()),
+            )
+            .item(
+                "creation_time",
+                AttributeValue::N(visit.creation_time.and_utc().timestamp().to_string()),
+            )
+            .item(
+                "record_expiration_epoch",
+                AttributeValue::N(visit.record_expiration_epoch.to_string()),
+            )
             .send()
             .await;
 
@@ -368,7 +414,9 @@ pub(super) async fn write_patient_visit(
                 };
                 tracing::debug!(
                     "DynamoDB patient_visit throttled, retry {}/{} in {}ms",
-                    attempt + 1, DYNAMO_MAX_RETRIES, delay_ms
+                    attempt + 1,
+                    DYNAMO_MAX_RETRIES,
+                    delay_ms
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
@@ -399,15 +447,39 @@ pub(super) async fn write_patient_vitals(
         let mut req = dynamo
             .put_item()
             .table_name("patient_vitals")
-            .item("patient_id",              AttributeValue::S(visit.patient_id.to_string()))
-            .item("clinic_id",               AttributeValue::S(sort_key.clone()))
-            .item("provider_id",             AttributeValue::S(visit.provider_id.to_string()))
-            .item("visit_id",                AttributeValue::S(visit.patient_visit_id.to_string()))
-            .item("blood_pressure",          AttributeValue::S(visit.blood_pressure.clone()))
-            .item("heart_rate",              AttributeValue::N(visit.heart_rate.to_string()))
-            .item("temperature",             AttributeValue::N(visit.temperature.to_string()))
-            .item("creation_time",           AttributeValue::N(visit.creation_time.and_utc().timestamp().to_string()))
-            .item("record_expiration_epoch", AttributeValue::N(visit.record_expiration_epoch.to_string()));
+            .item(
+                "patient_id",
+                AttributeValue::S(visit.patient_id.to_string()),
+            )
+            .item("clinic_id", AttributeValue::S(sort_key.clone()))
+            .item(
+                "provider_id",
+                AttributeValue::S(visit.provider_id.to_string()),
+            )
+            .item(
+                "visit_id",
+                AttributeValue::S(visit.patient_visit_id.to_string()),
+            )
+            .item(
+                "blood_pressure",
+                AttributeValue::S(visit.blood_pressure.clone()),
+            )
+            .item(
+                "heart_rate",
+                AttributeValue::N(visit.heart_rate.to_string()),
+            )
+            .item(
+                "temperature",
+                AttributeValue::N(visit.temperature.to_string()),
+            )
+            .item(
+                "creation_time",
+                AttributeValue::N(visit.creation_time.and_utc().timestamp().to_string()),
+            )
+            .item(
+                "record_expiration_epoch",
+                AttributeValue::N(visit.record_expiration_epoch.to_string()),
+            );
         // Nullable vitals — only include in DynamoDB if present (absent = NULL in source).
         if let Some(ref h) = visit.height {
             req = req.item("height", AttributeValue::N(h.to_string()));
@@ -430,7 +502,9 @@ pub(super) async fn write_patient_vitals(
                 };
                 tracing::debug!(
                     "DynamoDB patient_vitals throttled, retry {}/{} in {}ms",
-                    attempt + 1, DYNAMO_MAX_RETRIES, delay_ms
+                    attempt + 1,
+                    DYNAMO_MAX_RETRIES,
+                    delay_ms
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }

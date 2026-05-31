@@ -22,8 +22,6 @@ pub struct Claims {
     pub iat: i64,
 }
 
-
-
 /// Generate a JWT token for a user.
 ///
 /// # Arguments
@@ -46,14 +44,11 @@ pub fn generate_token(user_id: Uuid, email: String, cfg: &Config) -> Result<Stri
 
     let encoding_key = EncodingKey::from_secret(cfg.jwt_secret.as_ref());
 
-    encode(&Header::default(), &claims, &encoding_key)
-        .map_err(|e| {
-            tracing::error!("Failed to encode JWT: {}", e);
-            AppError::Internal(format!("Failed to generate token: {}", e))
-        })
+    encode(&Header::default(), &claims, &encoding_key).map_err(|e| {
+        tracing::error!("Failed to encode JWT: {}", e);
+        AppError::Internal(format!("Failed to generate token: {}", e))
+    })
 }
-
-
 
 /// Validate and decode a JWT token.
 ///
@@ -73,8 +68,6 @@ pub fn validate_token(token: &str, secret: &str) -> Result<Claims, AppError> {
             AppError::Unauthorized("Invalid or expired token".to_string())
         })
 }
-
-
 
 /// Actix Web extractor for JWT bearer token validation.
 ///

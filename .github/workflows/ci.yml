@@ -6,24 +6,54 @@ on:
   push:
     branches: [main]
 
+# Least privilege: CI only needs to read the repo. Jobs do not write back.
+permissions:
+  contents: read
+
 jobs:
-  check:
-    name: cargo check + test + clippy
+  test:
+    name: fmt + clippy + check + test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: vital-fold-engine
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
         with:
           workspaces: vital-fold-engine
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo check
         run: cargo check --all-targets
       - name: cargo test
         run: cargo test --all-targets
-      - name: cargo clippy
-        run: cargo clippy --all-targets
+
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: vital-fold-engine
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.80.0
+        with:
+          tool: cargo-audit
+      # RUSTSEC-2023-0071 (rsa "Marvin" timing attack) is knowingly ignored:
+      # `rsa` enters the lockfile only via sqlx's compile-time macro crate for
+      # the MySQL driver, which this postgres-only service never instantiates
+      # (it is absent from the actual build graph). No fixed `rsa` version
+      # exists upstream, so there is nothing to upgrade to.
+      - name: cargo audit
+        run: cargo audit --ignore RUSTSEC-2023-0071

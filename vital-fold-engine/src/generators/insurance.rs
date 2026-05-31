@@ -1,12 +1,12 @@
-/// Generate insurance companies and plans.
-///
-/// Insurance companies are fixed (7 companies from domain values).
-/// Insurance plans are dynamically generated based on SimulationConfig.
+//! Generate insurance companies and plans.
+//!
+//! Insurance companies are fixed (7 companies from domain values).
+//! Insurance plans are dynamically generated based on SimulationConfig.
 
 use crate::errors::AppError;
 use chrono::NaiveDate;
-use fake::Fake;
 use fake::faker::internet::en::SafeEmail;
+use fake::Fake;
 use rand::Rng;
 use sqlx::types::BigDecimal;
 
@@ -49,7 +49,10 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
         let (phone, tax_id) = {
             use rand::rng;
             let mut rng = rng();
-            (gen_phone(&mut rng), rng.random_range(100_000_000..999_999_999))
+            (
+                gen_phone(&mut rng),
+                rng.random_range(100_000_000..999_999_999),
+            )
         };
         let email = SafeEmail().fake::<String>();
 

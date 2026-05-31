@@ -1,11 +1,11 @@
-/// Generate healthcare providers (doctors) with realistic fake names.
-///
-/// Uses the `fake` crate to generate random provider names and specialties.
-/// Each provider is assigned a random specialty and medical license type.
+//! Generate healthcare providers (doctors) with realistic fake names.
+//!
+//! Uses the `fake` crate to generate random provider names and specialties.
+//! Each provider is assigned a random specialty and medical license type.
 
 use crate::errors::AppError;
-use fake::Fake;
 use fake::faker::name::en::{FirstName, LastName};
+use fake::Fake;
 use rand::Rng;
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
@@ -39,36 +39,41 @@ const SPECIALTIES: &[&str] = &[
 /// Physician license types (selected when not NP).
 const PHYSICIAN_TYPES: &[&str] = &["MD", "DO"];
 
+///===========================================================================================
 /// Generate N providers with random names and specialties.
 ///
 /// Providers are assigned to clinics proportionally based on `config.clinic_weights`.
 /// Busier clinics (higher weight) get more providers. Each provider's primary clinic
 /// index is stored in `ctx.provider_clinic_assignments` for use by schedule generation.
+/// ===========================================================================================
 pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::distr::{Distribution, weighted::WeightedIndex};
+    use rand::distr::{weighted::WeightedIndex, Distribution};
 
     let n = ctx.config.providers;
 
     // Build all provider data synchronously — rng dropped before any await.
     let (first_names, last_names, specialties, license_types, phones, emails, clinic_indices) = {
         let dist = WeightedIndex::new(&ctx.config.clinic_weights)
-            .or_else(|_| WeightedIndex::new(&super::DEFAULT_CLINIC_WEIGHTS))
-            .map_err(|e| crate::errors::AppError::Internal(
-                format!("clinic weights invalid: {}", e)))?;
+            .or_else(|_| WeightedIndex::new(super::DEFAULT_CLINIC_WEIGHTS))
+            .map_err(|e| {
+                crate::errors::AppError::Internal(format!("clinic weights invalid: {}", e))
+            })?;
         let mut rng = rand::rng();
 
-        let mut first_names:    Vec<String> = Vec::with_capacity(n);
-        let mut last_names:     Vec<String> = Vec::with_capacity(n);
-        let mut specialties:    Vec<&str>   = Vec::with_capacity(n);
-        let mut license_types:  Vec<&str>   = Vec::with_capacity(n);
-        let mut phones:         Vec<String> = Vec::with_capacity(n);
-        let mut emails:         Vec<String> = Vec::with_capacity(n);
-        let mut clinic_indices: Vec<usize>  = Vec::with_capacity(n);
+        let mut first_names: Vec<String> = Vec::with_capacity(n);
+        let mut last_names: Vec<String> = Vec::with_capacity(n);
+        let mut specialties: Vec<&str> = Vec::with_capacity(n);
+        let mut license_types: Vec<&str> = Vec::with_capacity(n);
+        let mut phones: Vec<String> = Vec::with_capacity(n);
+        let mut emails: Vec<String> = Vec::with_capacity(n);
+        let mut clinic_indices: Vec<usize> = Vec::with_capacity(n);
 
         for _ in 0..n {
             let first: String = loop {
                 let name: String = FirstName().fake();
-                if name != "Adolf" { break name; }
+                if name != "Adolf" {
+                    break name;
+                }
             };
             let last: String = LastName().fake();
 
@@ -80,7 +85,7 @@ pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppEr
             };
 
             // Email: first initial + last name @ example.org (e.g. j.smith@example.org)
-            let first_initial = first.chars().next().unwrap_or_else(|| 'x');
+            let first_initial = first.chars().next().unwrap_or('x');
             let email = format!(
                 "{}.{}@example.org",
                 first_initial.to_lowercase(),
@@ -96,7 +101,15 @@ pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppEr
             clinic_indices.push(dist.sample(&mut rng));
         }
 
-        (first_names, last_names, specialties, license_types, phones, emails, clinic_indices)
+        (
+            first_names,
+            last_names,
+            specialties,
+            license_types,
+            phones,
+            emails,
+            clinic_indices,
+        )
     }; // rng + dist dropped here before any await
 
     for i in 0..n {
@@ -117,7 +130,10 @@ pub async fn generate_providers(ctx: &mut SimulationContext) -> Result<(), AppEr
         ctx.counts.providers += 1;
     }
 
-    tracing::info!("Generated {} providers (distributed by clinic weight)", ctx.counts.providers);
+    tracing::info!(
+        "Generated {} providers (distributed by clinic weight)",
+        ctx.counts.providers
+    );
 
     Ok(())
 }
@@ -128,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_specialties_count() {
-        assert!(SPECIALTIES.len() > 0);
+        assert_eq!(SPECIALTIES.len(), 4);
     }
 
     #[test]

@@ -28,10 +28,7 @@ use uuid::Uuid;
         (status = 500, description = "Internal server error", body = String)
     )
 )]
-pub async fn me(
-    req: HttpRequest,
-    pool: web::Data<DbPool>,
-) -> Result<HttpResponse, AppError> {
+pub async fn me(req: HttpRequest, pool: web::Data<DbPool>) -> Result<HttpResponse, AppError> {
     // Extract Claims from request extensions (inserted by jwt_validator middleware)
     let claims = req
         .extensions()

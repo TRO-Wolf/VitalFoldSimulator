@@ -5,6 +5,24 @@
 
 ---
 
+## [Unreleased] — CI/CD Hardening + Strict Lints (2026-05-31)
+
+### Added
+- **`cargo fmt --check` gate** in CI, plus a one-time `cargo fmt` reformat of the whole crate (the `/// ===` section banners survive untouched; only manual column-alignment normalized).
+- **`cargo audit` job** (RustSec advisory scan) via SHA-pinned `taiki-e/install-action`. Knowingly ignores `RUSTSEC-2023-0071` (`rsa` Marvin attack) — `rsa` enters the lockfile only through sqlx's compile-time macro crate for the unused MySQL driver (postgres-only service; absent from the real build graph; no fixed `rsa` version exists).
+- **Dependabot** ([.github/dependabot.yml](.github/dependabot.yml)) — weekly grouped PRs for Cargo deps (`/vital-fold-engine`) and GitHub Actions (`/`).
+- **`[lints]` block** in [vital-fold-engine/Cargo.toml](vital-fold-engine/Cargo.toml): `unsafe_code = "forbid"` (rust) + clippy `all` at warn (denied in CI).
+
+### Changed
+- **Clippy is now strict** — CI runs `cargo clippy --all-targets --all-features -- -D warnings`; warnings fail the build (previously clippy ran but never failed).
+- **CI workflow hardened** — top-level + per-job `permissions: contents: read` (least privilege); every action pinned to a commit SHA with a `# vX.Y.Z` comment (checkout, dtolnay/rust-toolchain, Swatinem/rust-cache, taiki-e/install-action).
+- Docs synced: [CONTRIBUTING.md](CONTRIBUTING.md), [CLAUDE.md](CLAUDE.md) §4 + §10, and the `.github/` + `.github/workflows/` `map.md` files.
+
+### Fixed
+- Cleared all pre-existing clippy warnings so the strict gate passes: converted 12 file-header `///` blocks to `//!` module docs; removed 3 unused `super::*` test imports; dropped 3 needless borrows; `iter().any(|v| v==0)` → `contains(&0)`; `unwrap_or_else(|| 'x')` → `unwrap_or('x')`; introduced a `DbCountRow` type alias for the 16-tuple db-counts row; struct-literal init in an engine_state test; `#[allow(clippy::too_many_arguments)]` on the wide RVU column-buffer `push`; and made `test_specialties_count` assert the exact count.
+
+---
+
 ## [Unreleased] — Directory `map.md` Navigation (2026-05-30)
 
 ### Added

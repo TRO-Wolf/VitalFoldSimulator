@@ -44,6 +44,15 @@ utoipa = { version = "5", features = ["actix_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9", features = ["actix-web"] }
 utoipa-actix-web = "0.1"
 
+# ─── Lints ────────────────────────────────────────────────────────────────────
+# Enforced strictly in CI via `cargo clippy ... -- -D warnings`. Locally these
+# surface as warnings so day-to-day iteration isn't blocked.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
 # ─── Release Profile ────────────────────────────────────────────────────────
 [profile.release]
 lto = true

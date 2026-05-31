@@ -1,14 +1,14 @@
-/// Generate appointment_cpt (billing line-item) rows in Aurora DSQL.
-///
-/// Called during Phase 2 (POST /populate/dynamic) after patient visits.
-/// Every appointment produces one E/M code line-item drawn from a
-/// cardiology-clinic-weighted distribution; when `ekg_usage == true` on the
-/// paired patient_visit, a second line-item for CPT 93000 is added.
-///
-/// Each row snapshots the work/PE/MP RVU values at time of service along
-/// with the Medicare conversion factor, so a gold-layer pipeline can roll
-/// these up into provider productivity metrics (wRVUs per month, etc.)
-/// without worrying about CMS annual updates.
+//! Generate appointment_cpt (billing line-item) rows in Aurora DSQL.
+//!
+//! Called during Phase 2 (POST /populate/dynamic) after patient visits.
+//! Every appointment produces one E/M code line-item drawn from a
+//! cardiology-clinic-weighted distribution; when `ekg_usage == true` on the
+//! paired patient_visit, a second line-item for CPT 93000 is added.
+//!
+//! Each row snapshots the work/PE/MP RVU values at time of service along
+//! with the Medicare conversion factor, so a gold-layer pipeline can roll
+//! these up into provider productivity metrics (wRVUs per month, etc.)
+//! without worrying about CMS annual updates.
 
 use crate::db::DbPool;
 use crate::errors::AppError;
@@ -33,13 +33,13 @@ const CONVERSION_FACTOR_STR: &str = "32.7442";
 /// (established, low/moderate complexity) because cardiology clinics are
 /// predominantly follow-up visits.
 const EM_CODES: &[(&str, u32)] = &[
-    ("99213", 400),  // Established, low complexity — most common
-    ("99214", 350),  // Established, moderate complexity
-    ("99212", 100),  // Established, straightforward
-    ("99215", 100),  // Established, high complexity
-    ("99211",  20),  // Nurse visit
-    ("99204",  20),  // New patient, moderate
-    ("99203",  10),  // New patient, low
+    ("99213", 400), // Established, low complexity — most common
+    ("99214", 350), // Established, moderate complexity
+    ("99212", 100), // Established, straightforward
+    ("99215", 100), // Established, high complexity
+    ("99211", 20),  // Nurse visit
+    ("99204", 20),  // New patient, moderate
+    ("99203", 10),  // New patient, low
 ];
 
 /// CPT code used when ekg_usage = true on a patient_visit.
@@ -103,6 +103,8 @@ impl CptColumns {
         self.appointment_ids.len()
     }
 
+    // Wide by nature: one column-vector buffer per appointment_cpt column.
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         lookup: &CptLookup,
@@ -142,7 +144,7 @@ impl CptColumns {
 async fn load_cpt_codes(pool: &DbPool) -> Result<HashMap<String, CptLookup>, AppError> {
     let rows = sqlx::query(
         "SELECT cpt_code_id, code, work_rvu, pe_rvu_nonfacility, mp_rvu \
-         FROM vital_fold.cpt_code WHERE is_active = TRUE"
+         FROM vital_fold.cpt_code WHERE is_active = TRUE",
     )
     .fetch_all(pool)
     .await?;
@@ -161,11 +163,20 @@ async fn load_cpt_codes(pool: &DbPool) -> Result<HashMap<String, CptLookup>, App
         let pe_rvu_nonfacility: BigDecimal = row.try_get("pe_rvu_nonfacility")?;
         let mp_rvu: BigDecimal = row.try_get("mp_rvu")?;
 
-        map.insert(code, CptLookup { id, work_rvu, pe_rvu_nonfacility, mp_rvu });
+        map.insert(
+            code,
+            CptLookup {
+                id,
+                work_rvu,
+                pe_rvu_nonfacility,
+                mp_rvu,
+            },
+        );
     }
 
     // Verify every code referenced by the generator is present.
-    let mut missing: Vec<&str> = EM_CODES.iter()
+    let mut missing: Vec<&str> = EM_CODES
+        .iter()
         .map(|(code, _)| *code)
         .filter(|code| !map.contains_key(*code))
         .collect();
@@ -199,7 +210,8 @@ pub async fn generate_appointment_cpt(
     if appointments.len() != ekg_flags.len() {
         return Err(AppError::Internal(format!(
             "appointments.len() ({}) != ekg_flags.len() ({})",
-            appointments.len(), ekg_flags.len()
+            appointments.len(),
+            ekg_flags.len()
         )));
     }
 
@@ -210,23 +222,38 @@ pub async fn generate_appointment_cpt(
     // key. load_cpt_codes already verified every code, so these errors are
     // unreachable in practice — but we propagate instead of panicking per
     // the project's never-unwrap rule.
-    let em_lookups: Vec<&CptLookup> = EM_CODES.iter()
-        .map(|(code, _)| cpt_map.get(*code).ok_or_else(|| AppError::Internal(
-            format!("cpt_code '{}' disappeared after load verification", code))))
+    let em_lookups: Vec<&CptLookup> = EM_CODES
+        .iter()
+        .map(|(code, _)| {
+            cpt_map.get(*code).ok_or_else(|| {
+                AppError::Internal(format!(
+                    "cpt_code '{}' disappeared after load verification",
+                    code
+                ))
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let ekg_lookup = cpt_map.get(EKG_CPT_CODE).ok_or_else(|| AppError::Internal(
-        format!("cpt_code '{}' disappeared after load verification", EKG_CPT_CODE)))?;
+    let ekg_lookup = cpt_map.get(EKG_CPT_CODE).ok_or_else(|| {
+        AppError::Internal(format!(
+            "cpt_code '{}' disappeared after load verification",
+            EKG_CPT_CODE
+        ))
+    })?;
 
     // Build the E/M WeightedIndex. EM_CODES is a compile-time constant, so
     // this cannot fail unless the const is edited incorrectly — propagate
     // rather than panic.
     let em_weights: Vec<u32> = EM_CODES.iter().map(|(_, w)| *w).collect();
-    let em_dist = WeightedIndex::new(&em_weights).map_err(|e| AppError::Internal(
-        format!("EM_CODES weights are invalid: {}", e)))?;
+    let em_dist = WeightedIndex::new(&em_weights)
+        .map_err(|e| AppError::Internal(format!("EM_CODES weights are invalid: {}", e)))?;
 
     // Exact conversion factor via string parse — no float round-trip.
-    let cf_big = BigDecimal::from_str(CONVERSION_FACTOR_STR).map_err(|e| AppError::Internal(
-        format!("CONVERSION_FACTOR_STR is not a valid BigDecimal: {}", e)))?;
+    let cf_big = BigDecimal::from_str(CONVERSION_FACTOR_STR).map_err(|e| {
+        AppError::Internal(format!(
+            "CONVERSION_FACTOR_STR is not a valid BigDecimal: {}",
+            e
+        ))
+    })?;
 
     let ekg_count = ekg_flags.iter().filter(|f| **f).count();
 
@@ -244,11 +271,27 @@ pub async fn generate_appointment_cpt(
             // E/M line-item (always present).
             let em_idx = em_dist.sample(&mut rng);
             let em_lookup = em_lookups[em_idx]; // bounds: em_idx < em_weights.len() == em_lookups.len()
-            cols.push(em_lookup, *appt_id, *provider_id, *clinic_id, service_date, &cf_big, now);
+            cols.push(
+                em_lookup,
+                *appt_id,
+                *provider_id,
+                *clinic_id,
+                service_date,
+                &cf_big,
+                now,
+            );
 
             // Optional EKG line-item.
             if has_ekg {
-                cols.push(ekg_lookup, *appt_id, *provider_id, *clinic_id, service_date, &cf_big, now);
+                cols.push(
+                    ekg_lookup,
+                    *appt_id,
+                    *provider_id,
+                    *clinic_id,
+                    service_date,
+                    &cf_big,
+                    now,
+                );
             }
         }
 
@@ -275,7 +318,7 @@ pub async fn generate_appointment_cpt(
                 $1::uuid[], $2::bigint[], $3::bigint[], $4::bigint[], $5::date[], \
                 $6::smallint[], $7::text[], $8::text[], \
                 $9::numeric[], $10::numeric[], $11::numeric[], $12::numeric[], \
-                $13::numeric[], $14::numeric[], $15::timestamp[])"
+                $13::numeric[], $14::numeric[], $15::timestamp[])",
         )
         .bind(&columns.appointment_ids[r.clone()])
         .bind(&columns.cpt_code_ids[r.clone()])
@@ -300,7 +343,9 @@ pub async fn generate_appointment_cpt(
 
     tracing::info!(
         "Generated {} appointment_cpt rows from {} appointments ({} with EKG second line-item)",
-        inserted, appointments.len(), ekg_count
+        inserted,
+        appointments.len(),
+        ekg_count
     );
 
     Ok(inserted)
