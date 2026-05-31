@@ -20,12 +20,12 @@ jobs:
       run:
         working-directory: vital-fold-engine
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: vital-fold-engine
       - name: cargo fmt --check
@@ -46,8 +46,8 @@ jobs:
       run:
         working-directory: vital-fold-engine
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.80.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: taiki-e/install-action@3d832235cb306500b868c2632a137d48634568cd # v2.81.0
         with:
           tool: cargo-audit
       # Ignored advisories (all unfixable or in unreachable transitive paths) are
