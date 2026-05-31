@@ -50,10 +50,8 @@ jobs:
       - uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.80.0
         with:
           tool: cargo-audit
-      # RUSTSEC-2023-0071 (rsa "Marvin" timing attack) is knowingly ignored:
-      # `rsa` enters the lockfile only via sqlx's compile-time macro crate for
-      # the MySQL driver, which this postgres-only service never instantiates
-      # (it is absent from the actual build graph). No fixed `rsa` version
-      # exists upstream, so there is nothing to upgrade to.
+      # Ignored advisories (all unfixable or in unreachable transitive paths) are
+      # documented in vital-fold-engine/.cargo/audit.toml, which cargo-audit reads
+      # automatically. Everything cleanly fixable is kept patched in Cargo.lock.
       - name: cargo audit
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        run: cargo audit

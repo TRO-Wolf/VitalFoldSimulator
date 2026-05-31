@@ -9,9 +9,13 @@
 
 ### Added
 - **`cargo fmt --check` gate** in CI, plus a one-time `cargo fmt` reformat of the whole crate (the `/// ===` section banners survive untouched; only manual column-alignment normalized).
-- **`cargo audit` job** (RustSec advisory scan) via SHA-pinned `taiki-e/install-action`. Knowingly ignores `RUSTSEC-2023-0071` (`rsa` Marvin attack) — `rsa` enters the lockfile only through sqlx's compile-time macro crate for the unused MySQL driver (postgres-only service; absent from the real build graph; no fixed `rsa` version exists).
+- **`cargo audit` job** (RustSec advisory scan) via SHA-pinned `taiki-e/install-action`, with a documented ignore list in [vital-fold-engine/.cargo/audit.toml](vital-fold-engine/.cargo/audit.toml).
 - **Dependabot** ([.github/dependabot.yml](.github/dependabot.yml)) — weekly grouped PRs for Cargo deps (`/vital-fold-engine`) and GitHub Actions (`/`).
 - **`[lints]` block** in [vital-fold-engine/Cargo.toml](vital-fold-engine/Cargo.toml): `unsafe_code = "forbid"` (rust) + clippy `all` at warn (denied in CI).
+
+### Security
+- **Remediated 9 RustSec advisories** surfaced by the new `cargo audit` job, via surgical dependency updates (no AWS-SDK/MSRV churn): `aws-lc-sys` 0.37.1 → 0.41.0 (5 high-severity AWS-LC PKCS7/X.509/AES-CCM issues, RUSTSEC-2026-0044/0045/0046/0047/0048 — pulled in by bumping `aws-lc-rs` 1.16 → 1.17), `rustls-webpki` 0.103.9 → 0.103.13, and `rand` 0.8.5 → 0.8.6 / 0.9.2 → 0.9.4.
+- **4 residual advisories documented-ignored** (all unfixable or in unreachable transitive paths), in [vital-fold-engine/.cargo/audit.toml](vital-fold-engine/.cargo/audit.toml): `RUSTSEC-2023-0071` (`rsa` — unused `sqlx-mysql` orphan, no fix exists) and `RUSTSEC-2026-0098/0099/0104` (`rustls-webpki` 0.101.x, reachable only through the AWS SDK's bundled legacy `rustls 0.21` connector; the SDK's active HTTPS path uses the patched `aws-lc-rs`). Dependabot will surface upstream fixes as they land.
 
 ### Changed
 - **Clippy is now strict** — CI runs `cargo clippy --all-targets --all-features -- -D warnings`; warnings fail the build (previously clippy ran but never failed).
