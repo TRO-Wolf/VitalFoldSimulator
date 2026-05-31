@@ -282,6 +282,7 @@ fn publish_progress(
     }));
 }
 
+/// ===========================================================================================
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// This is Phase 1 of the data lifecycle (POST /populate). It generates all
@@ -305,6 +306,8 @@ fn publish_progress(
 /// 11. Medical records (N per appointment)
 /// 12. Patient visits (one per appointment)
 /// 13. Patient vitals (one per visit)
+///
+/// ===========================================================================================
 pub async fn run_populate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -394,6 +397,7 @@ pub async fn run_populate(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Seed Aurora DSQL with static reference data only (steps 1-8).
 ///
 /// Generates insurance companies, plans, clinics, providers, patients,
@@ -401,6 +405,7 @@ pub async fn run_populate(
 /// Does NOT generate date-dependent data (appointments, schedules, etc.).
 ///
 /// Progress is published with 8 total steps.
+/// ===========================================================================================
 pub async fn run_populate_static(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -515,6 +520,7 @@ pub async fn run_populate_static(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate date-dependent data for a specific date range (dynamic populate).
 ///
 /// Queries existing reference data (patients, providers, clinics) from Aurora,
@@ -525,6 +531,7 @@ pub async fn run_populate_static(
 /// Counts are updated additively so this can be called multiple times for different ranges.
 ///
 /// Requires a prior run of `run_populate_static` to have seeded reference data.
+/// ===========================================================================================
 pub async fn run_populate_dynamic(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -724,10 +731,12 @@ pub async fn run_populate_dynamic(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Query distinct dates that have appointments in Aurora DSQL.
 ///
 /// Returns dates sorted ascending. Used by the frontend calendar to show
 /// which dates are already populated.
+/// ===========================================================================================
 pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppError> {
     let rows: Vec<(NaiveDate,)> = sqlx::query_as(
         "SELECT DISTINCT appointment_datetime::date as d FROM vital_fold.appointment ORDER BY d",
@@ -738,6 +747,7 @@ pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppErr
     Ok(rows.into_iter().map(|(d,)| d).collect())
 }
 
+/// ===========================================================================================
 /// Hydrate `SimulationCounts` from the database so that in-memory state
 /// survives application restarts.  Queries `COUNT(*)` for every Aurora DSQL
 /// table tracked in the struct.  DynamoDB counts are left at 0 because
@@ -748,6 +758,7 @@ pub async fn get_populated_dates(pool: &DbPool) -> Result<Vec<NaiveDate>, AppErr
 /// Returns `AppError::Database` if any query fails (e.g. the `vital_fold`
 /// schema has not been created yet via `POST /admin/init-db`).  Callers
 /// should treat this as non-fatal at startup.
+/// ===========================================================================================
 pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, AppError> {
     /// Run a single `SELECT COUNT(*) …` and return the result as `usize`.
     /// Clamps negative values (impossible for COUNT but defensive) to 0.
@@ -800,6 +811,7 @@ pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, A
     })
 }
 
+/// ===========================================================================================
 /// Write DynamoDB records for all visits scheduled for today by reading from Aurora.
 ///
 /// This is Phase 2 of the data lifecycle (POST /simulate). It JOINs patient_visit
@@ -808,6 +820,7 @@ pub async fn hydrate_counts_from_db(pool: &DbPool) -> Result<SimulationCounts, A
 ///
 /// The semaphore caps concurrency at 40 in-flight DynamoDB requests to stay
 /// within DynamoDB's 4,000 WCU on-demand throughput limit per table.
+/// ===========================================================================================
 pub async fn run_simulate(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -961,6 +974,7 @@ struct ClinicCount {
     cnt: i64,
 }
 
+/// ===========================================================================================
 /// Run a timelapse visualization across multiple days.
 ///
 /// Queries Aurora for appointment counts per clinic per hour-window, updating
@@ -969,6 +983,7 @@ struct ClinicCount {
 ///
 /// Each simulated day is subdivided into 8 hour-windows (9am–5pm). The real-time
 /// interval between windows is `day_interval_secs / 8`.
+/// ===========================================================================================
 #[allow(dead_code)]
 pub async fn run_timelapse(
     pool: DbPool,
@@ -1161,11 +1176,13 @@ async fn animate_single_day(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Run a single-day heatmap for today's appointments.
 ///
 /// If DynamoDB hasn't been populated yet (dynamo_patient_visits == 0), auto-triggers
 /// `run_simulate` first to write patient_visit records, then animates
 /// hour-by-hour (9am–5pm) appointment counts per clinic.
+/// ===========================================================================================
 pub async fn run_today_heatmap(
     pool: DbPool,
     dynamo_client: DynamoClient,
@@ -1202,11 +1219,13 @@ pub async fn run_today_heatmap(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Replay heatmap animation using existing Aurora appointment data (read-only).
 ///
 /// Unlike `run_today_heatmap`, this does **not** auto-populate DynamoDB.
 /// It queries only Aurora for appointment counts per clinic per hour,
 /// making it safe for non-admin users.
+/// ===========================================================================================
 pub async fn run_heatmap_replay(
     pool: DbPool,
     state: &SimulatorState,
@@ -1234,6 +1253,7 @@ pub async fn run_heatmap_replay(
     Ok(())
 }
 
+/// ===========================================================================================
 /// Sync existing Aurora visit + vitals data to DynamoDB for a specific date range.
 ///
 /// Reads from patient_visit JOIN patient_vitals in Aurora and writes to both
@@ -1241,6 +1261,7 @@ pub async fn run_heatmap_replay(
 ///
 /// Progress is published to `DynamoProgress` so the UI can show a live progress bar.
 /// Requires a prior Dynamic Populate run to have created visits for the target dates.
+/// ===========================================================================================
 pub async fn run_date_range_simulate(
     pool: DbPool,
     dynamo_client: DynamoClient,

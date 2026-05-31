@@ -49,7 +49,9 @@ const STREET_SUFFIXES: &[&str] = &[
     "Blvd", "Ave", "Dr", "Pkwy", "Way", "Ln", "Ct", "Rd", "St", "Pl",
 ];
 
+/// ===========================================================================================
 /// Generate the 10 fixed clinics and insert them into the database.
+/// ===========================================================================================
 pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppError> {
     // Track city occurrence count for duplicate cities (Atlanta×2, Miami×2, Jacksonville×2)
     let mut city_count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -128,12 +130,14 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate clinic schedules for provider-clinic pairs.
 ///
 /// Each provider is scheduled at their primary clinic (from `provider_clinic_assignments`).
 /// ~30% of providers also work at a second random clinic. Each works 3-5 days per week.
 /// If `provider_clinic_assignments` is empty (e.g. dynamic populate path), falls back
 /// to the old behavior of 1-2 random clinics.
+/// ===========================================================================================
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::Rng;
     let open_time = NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default();

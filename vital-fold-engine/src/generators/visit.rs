@@ -54,10 +54,12 @@ struct AppointmentRow {
     appointment_datetime: NaiveDateTime,
 }
 
+/// ===========================================================================================
 /// Generate one patient_visit row and one patient_vitals row per appointment.
 ///
 /// Queries all appointments, generates visit + vitals data, and bulk-inserts into
 /// vital_fold.patient_visit (with RETURNING to capture UUIDs) then vital_fold.patient_vitals.
+/// ===========================================================================================
 pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use rand::{rng, Rng};
 
@@ -255,11 +257,13 @@ pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), 
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate patient_visit + patient_vitals for a set of appointments (standalone).
 /// Used by `run_date_range_simulate` and `run_populate_dynamic`.
 /// Returns (visit_ids, ekg_flags, vitals_count). `ekg_flags[i]` aligns 1:1
 /// with `appointments[i]` so the downstream RVU generator can bill CPT 93000
 /// for visits where the EKG was performed.
+/// ===========================================================================================
 pub async fn generate_visits_for_appointments(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],

@@ -187,11 +187,13 @@ fn build_patient_batch(
     Ok(batch)
 }
 
+/// ===========================================================================================
 /// Generate N patients and their emergency contacts in chunked bulk INSERT passes.
 ///
 /// Each chunk is ≤ DSQL_BATCH_SIZE rows to stay under Aurora DSQL's 3000-row
 /// per-transaction limit. Emergency contact UUIDs are pre-generated client-side
 /// so patients can reference them without a per-row UPDATE.
+/// ===========================================================================================
 pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppError> {
     let n: usize = ctx.config.patients;
 
@@ -289,14 +291,18 @@ pub async fn generate_patients(ctx: &mut SimulationContext) -> Result<(), AppErr
     Ok(())
 }
 
+/// ===========================================================================================
 /// No-op: emergency contact generation is now performed inside generate_patients.
+/// ===========================================================================================
 pub async fn generate_emergency_contacts(_ctx: &mut SimulationContext) -> Result<(), AppError> {
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate patient demographics — chunked bulk INSERT via UNNEST.
 ///
 /// Uses data cached in ctx.patient_data from generate_patients, avoiding a DB round-trip.
+/// ===========================================================================================
 pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use chrono::Local;
 
@@ -400,7 +406,9 @@ pub async fn generate_patient_demographics(ctx: &mut SimulationContext) -> Resul
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate patient insurance associations — chunked bulk INSERT via UNNEST.
+/// ===========================================================================================
 pub async fn generate_patient_insurance(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use chrono::Local;
 

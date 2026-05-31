@@ -40,7 +40,9 @@ fn get_treatment_for_diagnosis(diagnosis: &str) -> &'static str {
     }
 }
 
+/// ===========================================================================================
 /// Generate medical records for appointments in chunked bulk inserts.
+/// ===========================================================================================
 pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(), AppError> {
     // Fetch all appointments once to get the FK data needed for records.
     let appointments: Vec<(Uuid, Uuid, i64, i64, chrono::NaiveDateTime)> = sqlx::query_as(
@@ -115,11 +117,13 @@ pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(),
     Ok(())
 }
 
+/// ===========================================================================================
 /// Generate medical records for a specific set of appointments.
 ///
 /// Unlike `generate_medical_records` which queries Aurora for all appointments,
 /// this function takes an explicit appointment list (already in memory from
 /// `generate_appointments_for_range`). Returns the count of records inserted.
+/// ===========================================================================================
 pub async fn generate_medical_records_for_range(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],

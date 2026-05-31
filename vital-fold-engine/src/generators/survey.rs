@@ -33,9 +33,11 @@ const FEEDBACK_COMMENTS: &[&str] = &[
     "Front desk was very helpful",
 ];
 
+/// ===========================================================================================
 /// Generate survey rows for a random subset (~30%) of patient visits.
 ///
 /// Returns the number of survey rows inserted.
+/// ===========================================================================================
 pub async fn generate_surveys_for_visits(
     pool: &DbPool,
     visit_ids: &[Uuid],

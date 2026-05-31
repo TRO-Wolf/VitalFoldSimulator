@@ -193,10 +193,12 @@ async fn load_cpt_codes(pool: &DbPool) -> Result<HashMap<String, CptLookup>, App
     Ok(map)
 }
 
+/// ===========================================================================================
 /// Generate appointment_cpt rows for the given appointments.
 ///
 /// Returns the number of line-items inserted. Expect ~1.2 × appointments.len()
 /// since ~20% of visits have EKG and therefore produce a second line-item.
+/// ===========================================================================================
 pub async fn generate_appointment_cpt(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],

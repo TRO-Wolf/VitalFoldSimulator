@@ -9,6 +9,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
+/// ===========================================================================================
 /// Login with email and password.
 ///
 /// # Request Body
@@ -23,6 +24,7 @@ use uuid::Uuid;
 /// * `200 OK` with JWT token and user profile on success
 /// * `401 Unauthorized` if email not found or password is wrong
 /// * `500 Internal Server Error` if database fails
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/api/v1/auth/login",
@@ -92,6 +94,7 @@ pub struct AdminLoginRequest {
     pub password: String,
 }
 
+/// ===========================================================================================
 /// Login using admin credentials from environment variables.
 ///
 /// # Request Body
@@ -105,6 +108,7 @@ pub struct AdminLoginRequest {
 /// # Returns
 /// * `200 OK` with JWT token and admin profile on success
 /// * `401 Unauthorized` if credentials are wrong or admin login is not configured
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/api/v1/auth/admin-login",

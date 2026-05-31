@@ -85,6 +85,7 @@ pub struct PopulateRequest {
     pub clinic_weights: Option<Vec<u32>>,
 }
 
+/// ===========================================================================================
 /// Seed all Aurora DSQL tables with synthetic healthcare data.
 ///
 /// Generates insurance companies (7 fixed), insurance plans, clinics (10 fixed SE US),
@@ -102,6 +103,7 @@ pub struct PopulateRequest {
 /// If a run is already in progress, returns 409 Conflict.
 /// Otherwise, spawns an async background task and returns 202 Accepted.
 /// Poll `GET /simulate/status` to track progress via the `populate_progress` field.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate",
@@ -257,6 +259,7 @@ pub struct DynamicPopulateRequest {
     pub clinic_weights: Option<Vec<u32>>,
 }
 
+/// ===========================================================================================
 /// Seed Aurora DSQL with static reference data only (Step 1).
 ///
 /// Generates insurance companies (7), plans, clinics (10), providers, patients,
@@ -266,6 +269,7 @@ pub struct DynamicPopulateRequest {
 /// Run POST /populate/dynamic to generate those.
 ///
 /// Returns 409 if static data already exists (patients > 0). Reset first.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/static",
@@ -341,6 +345,7 @@ pub async fn start_populate_static(
     }))
 }
 
+/// ===========================================================================================
 /// Generate date-dependent data for a specific date range (Step 2).
 ///
 /// Generates clinic schedules (first run only), appointments, medical records,
@@ -353,6 +358,7 @@ pub async fn start_populate_static(
 ///
 /// Returns 400 if no static data exists or if the date range overlaps
 /// already-populated dates.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/dynamic",
@@ -473,10 +479,12 @@ pub async fn start_populate_dynamic(
     }))
 }
 
+/// ===========================================================================================
 /// Return the distinct dates that have appointments in Aurora DSQL.
 ///
 /// Used by the frontend calendar to show which dates are already populated
 /// and prevent double-population.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/populate/dates",
@@ -532,11 +540,13 @@ const DYNAMIC_RESET_TABLES: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// ===========================================================================================
 /// Delete only dynamic data (schedules, appointments, records, visits),
 /// preserving static reference data (patients, providers, clinics, insurance).
 ///
 /// Useful for re-populating with different date ranges without regenerating
 /// the 50,000+ static reference records.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/populate/reset-dynamic",
@@ -668,6 +678,7 @@ async fn run_dynamic_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), 
     Ok(())
 }
 
+/// ===========================================================================================
 /// Write DynamoDB records for all appointments scheduled for today.
 ///
 /// Queries Aurora DSQL for appointments where `appointment_datetime::date = CURRENT_DATE`,
@@ -680,6 +691,7 @@ async fn run_dynamic_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), 
 ///
 /// If no appointments are found for today, returns 202 with a warning logged.
 /// If a run is already in progress, returns 409 Conflict.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate",
@@ -739,6 +751,7 @@ pub struct DateRangeRequest {
     pub end_date: String,
 }
 
+/// ===========================================================================================
 /// Sync existing Aurora visit data to DynamoDB for a date range.
 ///
 /// Reads patient_visit + patient_vitals from Aurora for the specified date range
@@ -748,6 +761,7 @@ pub struct DateRangeRequest {
 /// If no visits exist for the date range, returns 400 Bad Request.
 ///
 /// The date range is inclusive on both ends. Maximum range is 90 days.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/date-range",
@@ -857,9 +871,11 @@ pub async fn start_date_range_simulate(
     }))
 }
 
+/// ===========================================================================================
 /// Stop the currently running populate or simulate job.
 ///
 /// Sets the running flag to false. The background task will exit gracefully.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/stop",
@@ -882,6 +898,7 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
     }))
 }
 
+/// ===========================================================================================
 /// Get the current run status and counts from the last completed job.
 ///
 /// Returns whether a populate or simulate job is currently running, the timestamp
@@ -894,6 +911,7 @@ pub async fn stop_simulation(state: web::Data<SimulatorState>) -> Result<HttpRes
 ///
 /// DynamoDB counts (set by POST /simulate):
 ///   dynamo_patient_visits
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/status",
@@ -928,11 +946,13 @@ pub async fn get_status(state: web::Data<SimulatorState>) -> Result<HttpResponse
     Ok(HttpResponse::Ok().json(response))
 }
 
+/// ===========================================================================================
 /// Query live record counts from Aurora DSQL and DynamoDB.
 ///
 /// Runs `SELECT COUNT(*)` against every Aurora table and uses
 /// `Scan` with `Select::Count` on both DynamoDB tables for exact counts.
 /// Returns the same shape as `SimulationCounts` but with actual database values.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/db-counts",
@@ -1078,6 +1098,7 @@ pub struct TimelapseRequest {
     pub window_interval_secs: Option<u64>,
 }
 
+/// ===========================================================================================
 /// Start a single-day heatmap visualization for today's appointments.
 ///
 /// Animates hour-by-hour (9am–5pm) appointment counts per clinic on the
@@ -1088,6 +1109,7 @@ pub struct TimelapseRequest {
 /// frontend heatmap canvas.
 ///
 /// Default: `window_interval_secs=5` (~40 seconds for the full day sweep).
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/timelapse",
@@ -1147,6 +1169,7 @@ pub async fn start_timelapse(
     }))
 }
 
+/// ===========================================================================================
 /// Get the current timelapse heatmap state.
 ///
 /// Returns per-clinic appointment activity for the current simulated day and hour.
@@ -1154,6 +1177,7 @@ pub async fn start_timelapse(
 /// frontend heatmap visualization.
 ///
 /// Returns `{ "active": false }` if no timelapse has been started.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/heatmap",
@@ -1174,11 +1198,13 @@ pub async fn get_heatmap(state: web::Data<SimulatorState>) -> Result<HttpRespons
     }
 }
 
+/// ===========================================================================================
 /// Start a read-only heatmap replay using existing Aurora appointment data.
 ///
 /// Unlike `start_timelapse`, this does **not** write to or read from DynamoDB.
 /// It replays the hour-by-hour animation for today's appointments, making it
 /// safe for non-admin users.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/replay",
@@ -1235,7 +1261,9 @@ pub async fn start_replay(
     }))
 }
 
+/// ===========================================================================================
 /// Clear the heatmap replay state without deleting any data.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/replay-reset",
@@ -1291,10 +1319,12 @@ pub struct VisitorsResponse {
     pub clinics: Vec<ClinicVisitors>,
 }
 
+/// ===========================================================================================
 /// Get today's visitors (patient names) grouped by clinic.
 ///
 /// Joins `appointment`, `patient`, and `clinic` tables to return the first/last name
 /// of every patient with an appointment today, grouped by clinic with city/state info.
+/// ===========================================================================================
 #[utoipa::path(
     get,
     path = "/simulate/visitors",
@@ -1357,6 +1387,7 @@ pub async fn get_visitors(pool: web::Data<DbPool>) -> Result<HttpResponse, AppEr
     }))
 }
 
+/// ===========================================================================================
 /// Reset all data by deleting all rows from vital_fold schema tables.
 ///
 /// WARNING: This is destructive. All generated Aurora DSQL data will be deleted.
@@ -1370,6 +1401,7 @@ pub async fn get_visitors(pool: web::Data<DbPool>) -> Result<HttpResponse, AppEr
 /// Aurora DSQL does not support TRUNCATE or ctid. Rows are deleted in 2500-row
 /// batches using `DELETE FROM t WHERE pk IN (SELECT pk FROM t LIMIT 2500)`,
 /// looped per table until all rows are gone.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/reset",
@@ -1579,6 +1611,7 @@ async fn run_aurora_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), A
     Ok(())
 }
 
+/// ===========================================================================================
 /// Delete all items from both DynamoDB tables.
 ///
 /// WARNING: Destructive. Scans each table and deletes all items in batches.
@@ -1586,6 +1619,7 @@ async fn run_aurora_reset(pool: &DbPool, state: &SimulatorState) -> Result<(), A
 ///
 /// Runs in a background task with progress tracking via `DynamoProgress`.
 /// Returns 202 Accepted immediately. Poll `GET /simulate/status` to track progress.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/simulate/reset-dynamo",
@@ -1841,6 +1875,7 @@ async fn delete_dynamo_table_with_progress(
 // Database Initialization
 // =============================================================================
 
+/// ===========================================================================================
 /// Initialize (or re-initialize) the database schema.
 ///
 /// Reads `migrations/init.sql` and executes it against Aurora DSQL.
@@ -1848,6 +1883,7 @@ async fn delete_dynamo_table_with_progress(
 /// The `public.users` table is created with IF NOT EXISTS (safe for re-runs).
 ///
 /// **Destructive** — requires confirmation from the admin dashboard.
+/// ===========================================================================================
 #[utoipa::path(
     post,
     path = "/admin/init-db",

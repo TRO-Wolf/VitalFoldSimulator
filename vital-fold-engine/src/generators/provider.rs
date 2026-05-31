@@ -39,7 +39,7 @@ const SPECIALTIES: &[&str] = &[
 /// Physician license types (selected when not NP).
 const PHYSICIAN_TYPES: &[&str] = &["MD", "DO"];
 
-///===========================================================================================
+/// ===========================================================================================
 /// Generate N providers with random names and specialties.
 ///
 /// Providers are assigned to clinics proportionally based on `config.clinic_weights`.

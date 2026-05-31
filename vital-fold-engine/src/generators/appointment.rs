@@ -350,7 +350,7 @@ pub async fn generate_appointments_by_day(
 /// Sort key is "clinic_id#visit_id" to ensure uniqueness per dynamo.json schema.
 /// Retries up to `DYNAMO_MAX_RETRIES` times on throttling errors with exponential
 /// backoff + jitter. Returns `true` on success, `false` on permanent error.
-/// ==========================================================================================
+/// ===========================================================================================
 pub(super) async fn write_patient_visit(
     dynamo: &aws_sdk_dynamodb::Client,
     visit: &crate::models::PatientVisitWithVitals,
