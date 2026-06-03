@@ -6,7 +6,7 @@
 use crate::errors::AppError;
 use fake::faker::name::en::{FirstName, LastName};
 use fake::Fake;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
 /// Format: +1-NXX-NXX-XXXX (18 chars)

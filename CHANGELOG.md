@@ -5,6 +5,23 @@
 
 ---
 
+## [Unreleased] — Dependency Major-Version Upgrades (2026-06-03)
+
+Takes the grouped Dependabot cargo PR (12 updates) and migrates the source to the breaking
+major bumps so CI stays green.
+
+### Changed
+- **`rand` 0.9 → 0.10** — the convenience methods (`random_range`, `random_bool`, `random`) moved to a new `RngExt` trait. Added `rand::RngExt` imports across the 8 generators that call them (kept `rand::Rng` only where an `impl Rng` / `R: Rng` bound is also used). No behavior change — the blanket `impl<R: Rng + ?Sized> RngExt` means signatures are untouched. Documented in CLAUDE.md §7.5.
+- **`jsonwebtoken` 9 → 10** — v10 requires an explicit crypto backend or HS256 sign/verify panics at runtime (`Could not automatically determine the process-level CryptoProvider`). Enabled the **`aws_lc_rs`** feature, which is already in the dependency tree via rustls / the AWS SDK, so no new crypto provider is introduced.
+- **`fake` 4 → 5** and **`bcrypt` 0.15 → 0.19** — no source changes required; compile and tests pass as-is.
+- Bumped the AWS smithy crates (transitive), which **raises the effective MSRV to 1.91.1**. CI's `stable` toolchain already satisfies this.
+- Docs synced: CLAUDE.md §2 (stack versions) + §7.5 (the `RngExt` note).
+
+### Notes
+- `cargo audit` stays green (exit 0): the new lockfile still carries the orphan `rsa 0.9.10` (out of build graph) and the legacy `rustls 0.21` / `rustls-webpki 0.101.7` connector, so the four documented ignores in [vital-fold-engine/.cargo/audit.toml](vital-fold-engine/.cargo/audit.toml) remain valid and necessary.
+
+---
+
 ## [Unreleased] — CI/CD Hardening + Strict Lints (2026-05-31)
 
 ### Added

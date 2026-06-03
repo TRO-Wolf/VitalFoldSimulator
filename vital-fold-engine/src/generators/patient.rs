@@ -2,7 +2,7 @@ use super::SimulationContext;
 use crate::errors::AppError;
 use rand::distr::weighted::WeightedIndex;
 use rand::distr::Distribution;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// Aurora DSQL maximum rows per transaction statement.
 /// Keep well under the 3000-row hard limit.

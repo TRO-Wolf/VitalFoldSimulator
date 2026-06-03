@@ -27,9 +27,9 @@
 
 **AWS SDK v1:** `aws-config`, `aws-sdk-dsql`, `aws-sdk-dynamodb`, `aws-credential-types`.
 
-**Auth:** `jsonwebtoken 9` (HS256) + `bcrypt 0.15`. Secrets come from env vars only.
+**Auth:** `jsonwebtoken 10` (HS256, `aws_lc_rs` crypto backend) + `bcrypt 0.19`. Secrets come from env vars only.
 
-**Synthetic data:** `fake = 4` (derive feature), `rand = 0.9`.
+**Synthetic data:** `fake = 5` (derive feature), `rand = 0.10`.
 
 **OpenAPI / docs:** `utoipa 5` + `utoipa-swagger-ui 9`. Swagger UI is served at `/swagger-ui/`.
 
@@ -221,6 +221,10 @@ These are **features**, not bugs. They exist to stress-test downstream pipelines
 
 ### 7.5 RNG + async
 `rand::ThreadRng` is `!Send`. In any async generator, drop the RNG before `.await`-ing. The existing generators follow this pattern — copy it.
+
+Since `rand 0.10`, the convenience methods (`random_range`, `random_bool`, `random`) live on the
+`RngExt` trait, not `Rng`. Import `rand::RngExt` (alongside `rand::Rng` only where a
+`impl Rng` / `R: Rng` bound is also needed) wherever you call them, or clippy `-D warnings` fails.
 
 ### 7.6 Bulk inserts
 Aurora DSQL has a per-statement size limit. Use `UNNEST` with a **2,500-row batch cap**. The existing generators already do this.

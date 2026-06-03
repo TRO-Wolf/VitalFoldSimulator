@@ -7,7 +7,7 @@ use crate::errors::AppError;
 use chrono::NaiveDate;
 use fake::faker::internet::en::SafeEmail;
 use fake::Fake;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use sqlx::types::BigDecimal;
 
 use super::SimulationContext;
@@ -45,8 +45,6 @@ const INSURANCE_COMPANIES: &[&str] = &[
 /// Generate the 7 fixed insurance companies and insert them into the database.
 /// ===========================================================================================
 pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::Rng;
-
     for company_name in INSURANCE_COMPANIES {
         let (phone, tax_id) = {
             use rand::rng;
@@ -86,7 +84,6 @@ pub async fn generate_insurance_companies(ctx: &mut SimulationContext) -> Result
 /// Each company gets plans_per_company plans.
 /// ===========================================================================================
 pub async fn generate_insurance_plans(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::Rng;
     let plans_per_company = ctx.config.plans_per_company;
 
     for company_id in &ctx.company_ids {

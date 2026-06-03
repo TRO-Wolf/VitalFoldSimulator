@@ -42,7 +42,7 @@ pub async fn generate_surveys_for_visits(
     pool: &DbPool,
     visit_ids: &[Uuid],
 ) -> Result<usize, AppError> {
-    use rand::{rng, Rng};
+    use rand::{rng, RngExt};
 
     if visit_ids.is_empty() {
         return Ok(0);

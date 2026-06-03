@@ -6,7 +6,7 @@
 use chrono::NaiveTime;
 use fake::faker::address::en::StreetName;
 use fake::Fake;
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// Generate a phone number guaranteed to fit within VARCHAR(20).
 /// Format: +1-NXX-NXX-XXXX (18 chars)
@@ -139,7 +139,6 @@ pub async fn generate_clinics(ctx: &mut SimulationContext) -> Result<(), AppErro
 /// to the old behavior of 1-2 random clinics.
 /// ===========================================================================================
 pub async fn generate_clinic_schedules(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::Rng;
     let open_time = NaiveTime::from_hms_opt(8, 0, 0).unwrap_or_default();
     let close_time = NaiveTime::from_hms_opt(17, 0, 0).unwrap_or_default();
 

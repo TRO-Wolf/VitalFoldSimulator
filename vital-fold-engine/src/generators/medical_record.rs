@@ -56,7 +56,7 @@ pub async fn generate_medical_records(ctx: &mut SimulationContext) -> Result<(),
 
     // Build all record data synchronously — rng dropped before any await.
     let (pt_ids, provider_ids, clinic_ids, record_dates, diagnoses, treatments) = {
-        use rand::{rng, Rng};
+        use rand::{rng, RngExt};
         let mut rng = rng();
 
         let mut pt_ids: Vec<Uuid> = Vec::with_capacity(total);
@@ -133,7 +133,7 @@ pub async fn generate_medical_records_for_range(
 
     // Build all record data synchronously — rng dropped before any await.
     let (pt_ids, provider_ids, clinic_ids, record_dates, diagnoses, treatments) = {
-        use rand::{rng, Rng};
+        use rand::{rng, RngExt};
         let mut rng = rng();
 
         let mut pt_ids: Vec<Uuid> = Vec::with_capacity(total);

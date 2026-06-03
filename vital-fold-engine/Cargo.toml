@@ -19,7 +19,10 @@ sqlx = { version = "0.8.6", features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-jsonwebtoken = "10"
+# v10 requires an explicit crypto backend; aws_lc_rs is already in the tree
+# (rustls / AWS SDK), so this adds no new provider. Exactly one backend feature
+# must be enabled or HS256 sign/verify panics at runtime.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 bcrypt = "0.19"
 anyhow = "1"
 bigdecimal = { version = "0.4", features = ["serde"] }

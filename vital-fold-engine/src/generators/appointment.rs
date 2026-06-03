@@ -111,7 +111,7 @@ const APPOINTMENT_REASONS: &[&str] = &[
 /// ===========================================================================================
 pub async fn generate_appointments(ctx: &mut SimulationContext) -> Result<(), AppError> {
     use super::SLOTS_PER_PROVIDER;
-    use rand::{rng, Rng};
+    use rand::{rng, RngExt};
 
     let span = (ctx.config.end_date - ctx.config.start_date).num_days() + 1;
     let num_providers = ctx.provider_ids.len();
@@ -227,7 +227,7 @@ pub async fn generate_appointments_by_day(
     end_date: NaiveDate,
     clinic_weights: &[u32],
 ) -> Result<Vec<(Uuid, Uuid, i64, i64, NaiveDateTime, String)>, AppError> {
-    use rand::{rng, Rng};
+    use rand::{rng, RngExt};
 
     use super::SLOTS_PER_PROVIDER;
 
@@ -408,7 +408,7 @@ pub(super) async fn write_patient_visit(
             Ok(_) => return true,
             Err(e) if attempt < DYNAMO_MAX_RETRIES && is_throttle_error(&e) => {
                 let delay_ms = {
-                    use rand::Rng;
+                    use rand::RngExt;
                     let base = DYNAMO_RETRY_BASE_MS * 2u64.pow(attempt);
                     base / 2 + rand::rng().random_range(0..=base / 2)
                 };
@@ -496,7 +496,7 @@ pub(super) async fn write_patient_vitals(
             Ok(_) => return true,
             Err(e) if attempt < DYNAMO_MAX_RETRIES && is_throttle_error(&e) => {
                 let delay_ms = {
-                    use rand::Rng;
+                    use rand::RngExt;
                     let base = DYNAMO_RETRY_BASE_MS * 2u64.pow(attempt);
                     base / 2 + rand::rng().random_range(0..=base / 2)
                 };

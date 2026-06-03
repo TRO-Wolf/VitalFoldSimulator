@@ -28,6 +28,7 @@ const MON_TUE_LONG_TAIL_RATE: f64 = 0.15;
 /// experience a noticeable delay (15% moderate, 15% long-tail). Wed–Sun stays
 /// at the steady 0–5 min baseline.
 fn provider_seen_offset_minutes<R: rand::Rng>(rng: &mut R, appt_dt: NaiveDateTime) -> i64 {
+    use rand::RngExt;
     let backlogged = matches!(appt_dt.weekday(), Weekday::Mon | Weekday::Tue);
 
     if backlogged {
@@ -61,7 +62,7 @@ struct AppointmentRow {
 /// vital_fold.patient_visit (with RETURNING to capture UUIDs) then vital_fold.patient_vitals.
 /// ===========================================================================================
 pub async fn generate_patient_visits(ctx: &mut SimulationContext) -> Result<(), AppError> {
-    use rand::{rng, Rng};
+    use rand::{rng, RngExt};
 
     // Query all appointments from Aurora.
     let appointments: Vec<AppointmentRow> = sqlx::query_as(
@@ -268,7 +269,7 @@ pub async fn generate_visits_for_appointments(
     pool: &DbPool,
     appointments: &[(Uuid, Uuid, i64, i64, NaiveDateTime)],
 ) -> Result<(Vec<Uuid>, Vec<bool>, usize), AppError> {
-    use rand::{rng, Rng};
+    use rand::{rng, RngExt};
 
     let total = appointments.len();
     if total == 0 {
